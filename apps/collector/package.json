@@ -1,0 +1,11 @@
+{
+  "name": "@ama/collector",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "src/index.js",
+  "dependencies": {
+    "@ama/shared": "0.1.0",
+    "ssh2": "^1.16.0"
+  }
+}

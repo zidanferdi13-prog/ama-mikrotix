@@ -1,0 +1,18 @@
+{
+  "healthPath": "./.runtime/collector-health.json",
+  "devices": [
+    {
+      "id": 1,
+      "name": "APOfficeLT1",
+      "ip": "192.168.5.228",
+      "vendor": "Ubiquiti",
+      "model": "UAP-AC-LR",
+      "firmware": "6.8.2.15592",
+      "username": "admin",
+      "port": 22,
+      "hostKeyFingerprint": null
+    },
+    { "id": 2, "name": "APOfficeLT2", "ip": "192.168.5.226", "username": "admin", "port": 22 },
+    { "id": 3, "name": "APNUSANTARA", "ip": "192.168.5.120", "username": "admin", "port": 22 }
+  ]
+}

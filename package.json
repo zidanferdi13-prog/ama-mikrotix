@@ -1,0 +1,19 @@
+{
+  "name": "ama-mikrotik-monitoring",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20.0.0 <21"
+  },
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "test": "node --test packages/shared/test apps/collector/test apps/server/test",
+    "collector": "node apps/collector/src/main.js",
+    "server": "node apps/server/src/index.js",
+    "web": "npm run dev -w @ama/web"
+  }
+}
