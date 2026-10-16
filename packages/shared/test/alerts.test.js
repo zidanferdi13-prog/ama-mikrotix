@@ -512,13 +512,19 @@ test('gerbang kesegaran: data terlalu tua menahan rule (hold), bukan menutup ale
   assert.deepEqual(planAlertChanges(findings, [open], { at: sec(0) }).filter((op) => op.desired.rule_id === 'ap.memory.high'), []);
 });
 
-test('client.traffic_stalled: counter diam + sinyal lemah pada 3 snapshot', () => {
+test('client.traffic_stalled: counter diam + sinyal lemah pada 5 snapshot', () => {
   const mac = 'aa:bb:cc:00:00:06';
-  const stalled = [120, 60, 0].map((ago) => point(ago, [client(mac, -72, 5000)]));
+  const stalled = [240, 180, 120, 60, 0].map((ago) => point(ago, [client(mac, -72, 5000)]));
   const findings = evaluateClientRules({ atMs: T0, deviceId: DEVICE.id, points: stalled, alerts: new Map(), apEvaluable: true });
   assert.equal(isActive(findings, 'client.traffic_stalled', mac), true);
+  assert.equal(findingOf(findings, 'client.traffic_stalled', mac).evidence.unchanged_snapshots, 5);
 
-  const moving = [120, 60, 0].map((ago, index) => point(ago, [client(mac, -72, 5000 + index * 100)]));
+  // 3 snapshot diam (idle sesaat) belum cukup: itu penyebab flap alert ini.
+  const short = [120, 60, 0].map((ago) => point(ago, [client(mac, -72, 5000)]));
+  const shortFindings = evaluateClientRules({ atMs: T0, deviceId: DEVICE.id, points: short, alerts: new Map(), apEvaluable: true });
+  assert.equal(isActive(shortFindings, 'client.traffic_stalled', mac), false);
+
+  const moving = [240, 180, 120, 60, 0].map((ago, index) => point(ago, [client(mac, -72, 5000 + index * 100)]));
   const movingFindings = evaluateClientRules({ atMs: T0, deviceId: DEVICE.id, points: moving, alerts: new Map(), apEvaluable: true });
   assert.equal(isActive(movingFindings, 'client.traffic_stalled', mac), false);
 });

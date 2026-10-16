@@ -77,10 +77,14 @@ export const ALERT = {
   // Hilang dari satu AP tapi terlihat di AP lain dalam rentang ini = roaming, bukan
   // client hilang. Satu snapshot per AP ≈ 60 s, jadi 2 menit ≈ 2 snapshot.
   clientElsewhereMs: 2 * MIN_MS,
-  // Counter diam + sinyal lemah berulang (indikasi, bukan bukti).
-  clientTrafficStalled: { snapshots: 3 },
+  // Counter diam + sinyal lemah berulang (indikasi, bukan bukti). Kalibrasi 2026-10-16:
+  // 3 snapshot → 104/127 alert pulih < 10 menit (HP idle sesaat); 5 ≈ 5 menit diam.
+  clientTrafficStalled: { snapshots: 5 },
   // Baseline = median [now-windowMs, now-recentMs); recent = [now-recentMs, now].
-  clientCount: { windowMs: 30 * MIN_MS, recentMs: 5 * MIN_MS, dropRatio: 0.5, spikeRatio: 1, minBaseline: 4 },
+  // Kalibrasi 2026-10-16 (replay histori hari itu, 9 AP, 0–18 client): minBaseline 4 → 16
+  // episode drop, kebanyakan churn kecil (mis. 5→3); 6 → 10 episode. Dengan 6, penurunan
+  // minimum yang memicu = 3 client (rasio 0,5).
+  clientCount: { windowMs: 30 * MIN_MS, recentMs: 5 * MIN_MS, dropRatio: 0.5, spikeRatio: 1, minBaseline: 6 },
   reboot: { minDropSeconds: 120, ttlMs: 15 * MIN_MS },
   // no_secret/host_key bersifat deterministik → 1 sampel cukup; timeout/auth → 2 beruntun.
   sshFailures: 2,

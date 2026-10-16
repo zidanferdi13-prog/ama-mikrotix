@@ -254,6 +254,19 @@ async function applyOps(conn, ops, atMs, statusById = new Map()) {
   return { created, reopened, touched, resolved };
 }
 
+// Input korelasi: temuan aktif siklus ini plus alert terbuka yang tidak resolved dan tidak
+// dinilai ulang siklus ini (alert yang di-hold tetap dihitung). Satu entri per dedup_key.
+export function correlationInputOf(desired, openAlerts) {
+  const evaluated = new Set(desired.map((d) => d.dedup_key));
+  const stillOpen = openAlerts.filter((a) => a.status !== 'resolved' && !evaluated.has(a.dedup_key));
+  return [...desired.filter((d) => d.active), ...stillOpen].map((a) => ({
+    rule_id: a.rule_id,
+    device_id: a.device_id ?? null,
+    target: a.target ?? null,
+    severity: ALERT_RULES[a.rule_id]?.severity ?? 'info',
+  }));
+}
+
 // Satu putaran evaluasi. Mengembalikan ringkasan untuk log; tidak melempar.
 export async function runAlertEval(pool, { atMs = Date.now() } = {}) {
   const conn = await pool.getConnection();
@@ -280,6 +293,10 @@ export async function runAlertEval(pool, { atMs = Date.now() } = {}) {
       evidence: jsonOf(row.evidence) ?? {},
       diagnosis: jsonOf(row.diagnosis),
     }));
+    // openAlerts memuat baris resolved (untuk reopen di planAlertChanges). Baris resolved
+    // TIDAK boleh dianggap terbuka oleh rule maupun korelasi: dulu incident.ap tertahan
+    // karena alert client yang sudah resolved masih dihitung sebagai indikator.
+    const liveAlerts = openAlerts.filter((a) => a.status !== 'resolved');
 
     const findings = [];
     const deviceSummaries = [];
@@ -289,7 +306,7 @@ export async function runAlertEval(pool, { atMs = Date.now() } = {}) {
       // Perangkat tanpa sampel dalam jendela tetap dievaluasi: rule berbasis ping
       // harus bisa menyimpulkan "tidak ada data".
       const input = inputs.get(id) ?? { ping: null, pingHistory: [], system: null, systemHistory: [], systemSamples: [], events: [], points: [] };
-      const byKey = new Map(openAlerts.filter((a) => a.device_id === id).map((a) => [a.dedup_key, a]));
+      const byKey = new Map(liveAlerts.filter((a) => a.device_id === id).map((a) => [a.dedup_key, a]));
       const deviceResult = evaluateDeviceRules({
         atMs,
         device: { id, name: device.name },
@@ -309,7 +326,7 @@ export async function runAlertEval(pool, { atMs = Date.now() } = {}) {
       const latestSsh = input.systemSamples[input.systemSamples.length - 1]?.ssh ?? null;
       const apEvaluable = systemAgeMs !== null && systemAgeMs <= ALERT.maxDataAgeMs.metric && latestSsh?.status === 'ok';
       const lastSnapshot = input.points[input.points.length - 1] ?? null;
-      const alertMacs = new Set(openAlerts.filter((a) => a.device_id === id && a.target).map((a) => a.target));
+      const alertMacs = new Set(liveAlerts.filter((a) => a.device_id === id && a.target).map((a) => a.target));
       const healthyClients = lastSnapshot ? (lastSnapshot.clients ?? []).filter((c) => !alertMacs.has(c.mac)).length : null;
       const clientFindings = evaluateClientRules({
         atMs,
@@ -331,14 +348,7 @@ export async function runAlertEval(pool, { atMs = Date.now() } = {}) {
 
     const desired = findings.map((item) => ({ ...item, dedup_key: alertDedupKey(item) }));
 
-    // Korelasi memakai temuan siklus ini plus alert yang masih terbuka.
-    const activeNow = desired.filter((d) => d.active);
-    const correlationInput = [...activeNow, ...openAlerts].map((a) => ({
-      rule_id: a.rule_id,
-      device_id: a.device_id ?? null,
-      target: a.target ?? null,
-      severity: ALERT_RULES[a.rule_id]?.severity ?? 'info',
-    }));
+    const correlationInput = correlationInputOf(desired, liveAlerts);
     const heartbeatAtMs = state.heartbeatAtMs;
     const correlations = correlateAlerts({
       atMs,
@@ -351,7 +361,7 @@ export async function runAlertEval(pool, { atMs = Date.now() } = {}) {
     // Korelasi tidak dihitung ulang dari nol: bila insiden yang masih terbuka tidak
     // lagi terdeteksi siklus ini, insiden itu ditutup — bukan menggantung selamanya.
     const correlationKeys = new Set(correlations.map((item) => alertDedupKey(item)));
-    for (const row of openAlerts) {
+    for (const row of liveAlerts) {
       const isCorrelation = String(row.rule_id).startsWith('incident.') || String(row.rule_id).startsWith('correlation.');
       if (!isCorrelation || correlationKeys.has(row.dedup_key)) continue;
       desired.push({

@@ -547,8 +547,15 @@ export function diagnosisFor(kind, confidence, context = {}) {
 // --- §6 Korelasi Skenario A–D ------------------------------------------------
 const AVAILABILITY_RULES = ['ap.unreachable', 'ap.ssh.unavailable', 'ap.ssh.auth_failed', 'ap.ssh.config', 'ap.flapping'];
 const LATENCY_RULES = ['ap.latency.high', 'ap.latency.critical'];
-const RESOURCE_RULES = ['ap.memory.high', 'ap.load.high', 'ap.client_count.drop', 'ap.client_count.spike'];
+// ap.client_count.* diturunkan dari daftar client yang sama dengan indikator `clients`:
+// bukan indikator mandiri, jadi tidak dihitung sebagai resource AP (hindari skor ganda).
+const RESOURCE_RULES = ['ap.memory.high', 'ap.load.high'];
 const CLIENT_RULES = ['client.signal.weak', 'client.signal.critical', 'client.flapping', 'client.disconnected', 'client.traffic_stalled'];
+// Gejala "client bermasalah". client.disconnected TIDAK termasuk: client yang pulang atau
+// dimatikan menghasilkan alert yang sama dengan client yang putus karena masalah, jadi churn
+// hanya dicatat sebagai alert info — bukan indikator insiden AP (dulu satu AP bisa dapat
+// incident.ap hanya karena clientnya berangsur pulang).
+const SYMPTOM_CLIENT_RULES = ['client.signal.weak', 'client.signal.critical', 'client.flapping', 'client.traffic_stalled'];
 
 export function isClientAlert(ruleId) {
   return CLIENT_RULES.includes(ruleId);
@@ -571,8 +578,8 @@ function byDevice(alerts) {
   return map;
 }
 
-// alerts: alert open + temuan baru pada evaluasi ini, supaya korelasi tidak tertinggal
-// satu siklus. devices: [{ id, stale, client_count }].
+// alerts: alert terbuka (BUKAN resolved) + temuan baru pada evaluasi ini, supaya korelasi
+// tidak tertinggal satu siklus. devices: [{ id, stale, client_count }].
 export function correlateAlerts({ atMs, alerts = [], devices = [], collectorAgeMs = null }) {
   const deviceAlerts = byDevice(alerts);
   const staleDevices = devices.filter((d) => d.stale);
@@ -637,7 +644,9 @@ export function correlateAlerts({ atMs, alerts = [], devices = [], collectorAgeM
     const signalClients = clientList.filter((a) => a.rule_id.startsWith('client.signal.'));
     const flapClients = clientList.filter((a) => a.rule_id === 'client.flapping');
     const goneClients = clientList.filter((a) => a.rule_id === 'client.disconnected');
-    const symptomClients = [...new Set([...signalClients, ...flapClients, ...goneClients].map((a) => a.target))];
+    // Hanya gejala RF/nyata yang mengangkat indikator `clients`; client yang hilang tetap
+    // dilaporkan sebagai hitungan `disappeared`.
+    const symptomClients = [...new Set(clientList.filter((a) => SYMPTOM_CLIENT_RULES.includes(a.rule_id)).map((a) => a.target))];
     const resourceRules = list.filter((a) => RESOURCE_RULES.includes(a.rule_id)).map((a) => a.rule_id);
     const connectivityRules = list.filter((a) => LATENCY_RULES.includes(a.rule_id) || AVAILABILITY_RULES.includes(a.rule_id)).map((a) => a.rule_id);
     // Indikator independen: client terdampak, resource AP, konektivitas AP.
@@ -671,7 +680,7 @@ export function correlateAlerts({ atMs, alerts = [], devices = [], collectorAgeM
   // B — client individual: AP sehat, client lain normal.
   for (const [id, list] of deviceAlerts) {
     if (apIssueDevices.has(id) || staleDevices.some((d) => d.id === id)) continue;
-    const clientList = list.filter((a) => isClientAlert(a.rule_id));
+    const clientList = list.filter((a) => SYMPTOM_CLIENT_RULES.includes(a.rule_id));
     if (!clientList.length) continue;
     // AP punya masalah sendiri → skenario A yang berlaku, bukan B.
     if (list.some((a) => !isClientAlert(a.rule_id) && !isCorrelationAlert(a.rule_id) && a.rule_id !== 'ap.reboot')) continue;
