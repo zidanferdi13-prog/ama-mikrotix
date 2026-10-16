@@ -72,6 +72,9 @@ export const ALERT = {
   clientFlapping: { windowMs: 15 * MIN_MS, episodes: 3 },
   // Client dianggap pergi setelah absen pada N snapshot sukses beruntun (bukan 1).
   clientGoneSnapshots: 2,
+  // Hilang dari satu AP tapi terlihat di AP lain dalam rentang ini = roaming, bukan
+  // client hilang. Satu snapshot per AP ≈ 60 s, jadi 2 menit ≈ 2 snapshot.
+  clientElsewhereMs: 2 * MIN_MS,
   // Counter diam + sinyal lemah berulang (indikasi, bukan bukti).
   clientTrafficStalled: { snapshots: 3 },
   // Baseline = median [now-windowMs, now-recentMs); recent = [now-recentMs, now].

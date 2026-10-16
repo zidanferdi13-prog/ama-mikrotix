@@ -3,7 +3,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { api } from './api.js';
 import { StatusBadge } from './Badge.jsx';
-import { formatRelative, formatTime } from './format.js';
+import { SIGNAL_LABEL, formatRelative, formatTime, signalTone } from './format.js';
 
 const SEVERITY_LABEL = { critical: 'Kritis', warning: 'Peringatan', info: 'Info' };
 const SEVERITY_TONE = { critical: 'down', warning: 'stale', info: 'neutral' };
@@ -485,15 +485,24 @@ export default function AlertCenter({ devices, refreshKey, alertEvent, onSelectD
                     </tr>
                   </thead>
                   <tbody>
-                    {detail.context.clients.map((client) => (
+                    {detail.context.clients.map((client) => {
+                      const worst = signalTone(client.worst_signal_dbm);
+                      const best = signalTone(client.best_signal_dbm);
+                      return (
                       <tr key={client.mac}>
                         <td className="mono">{client.mac}</td>
                         <td>{client.snapshots}</td>
                         <td>{formatTime(client.last_seen_at)}</td>
-                        <td>{client.worst_signal_dbm ?? '—'} dBm</td>
-                        <td>{client.best_signal_dbm ?? '—'} dBm</td>
+                        <td className={`num${worst ? ` sig-${worst}` : ''}`}>
+                          {client.worst_signal_dbm ?? '—'} dBm
+                          {worst && <span className="sub"> {SIGNAL_LABEL[worst]}</span>}
+                        </td>
+                        <td className={`num${best ? ` sig-${best}` : ''}`}>
+                          {client.best_signal_dbm ?? '—'} dBm
+                        </td>
                       </tr>
-                    ))}
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>

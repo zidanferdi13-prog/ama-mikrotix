@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { api } from './api.js';
 import Chart from './Chart.jsx';
 import { CollectionBadge, FreshnessBadge, ReachabilityBadge } from './Badge.jsx';
-import { formatRelative, formatTime, formatUptime, num } from './format.js';
+import { SIGNAL_LABEL, formatRelative, formatTime, formatUptime, num, signalTone } from './format.js';
 
 const RANGES = [
   { key: '1h', label: '1 jam', ms: 3_600_000 },
@@ -450,13 +450,16 @@ function ClientsCard({ id }) {
                   </tr>
                 </thead>
                 <tbody>
-                  {clients.map((c, i) => (
+                  {clients.map((c, i) => {
+                    const tone = signalTone(c.signal);
+                    return (
                     <tr key={c.mac ?? i}>
                       <th scope="row">{c.hostname || '—'}</th>
                       <td className="mono">{c.ip ?? '—'}</td>
                       <td className="mono">{c.mac ?? '—'}</td>
-                      <td className="num">
+                      <td className={`num${tone ? ` sig-${tone}` : ''}`}>
                         {c.signal == null ? '—' : `${c.signal} dBm`}
+                        {tone && <span className="sub"> {SIGNAL_LABEL[tone]}</span>}
                         {c.rssi != null && <span className="sub"> (RSSI {c.rssi})</span>}
                       </td>
                       <td>
@@ -468,7 +471,8 @@ function ClientsCard({ id }) {
                       </td>
                       <td className="num">{formatUptime(c.uptime_s)}</td>
                     </tr>
-                  ))}
+                    );
+                  })}
                 </tbody>
               </table>
             </div>

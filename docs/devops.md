@@ -338,6 +338,14 @@ Diputuskan saat menambah alert proaktif & insiden (2026-10):
 - **Baris korelasi tidak menahan deteksi ulang dirinya sendiri** — skenario B (client) hanya
   menghitung alert non-client *non-korelasi* sebagai "AP punya masalah sendiri"; tanpa itu baris
   `correlation.client_issue` yang terbuka membuat korelasi ditutup lalu dibuka lagi tiap siklus.
+- **`client.disconnected` hanya bila hilang dari semua AP** — hilang dari satu AP tapi ada di
+  snapshot sukses *terakhir* AP lain (≤ `clientElsewhereMs` = 2 menit) = roaming: tidak membuka
+  alert dan menutup yang terbuka. Sisa bolak-balik: client roaming di luar 2 menit atau selisih
+  1–2 detik antar-snapshot AP; diterima, bukan dikejar. Client yang tak terlihat sepanjang
+  jendela 20 menit dianggap sudah pergi → alertnya ditutup, supaya tidak menumpuk.
+- **Warna sinyal client** memakai ambang rule yang sama (-70/-80 dBm dari
+  `@ama/shared/constants`): hijau bagus, kuning lemah, merah sangat lemah. Kata "bagus/lemah/
+  sangat lemah" selalu tampil, warna hanya penguat (aman buta warna).
 - **Sudah diterapkan di host ini (2026-10-16)** — migrasi `005` dijalankan sebagai root via socket
   (`sudo mysql --protocol=socket -uroot ama_monitoring < db/migrations/005_alerts.sql`), build
   dashboard disalin ke `/srv/ama-mikrotix/apps/web/dist`, lalu `ama-server` + `ama-collector`

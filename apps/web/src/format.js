@@ -1,5 +1,7 @@
 // Pemformat tampilan. Unix timestamp disimpan UTC, ditampilkan WIB dengan label zona.
+import { ALERT_RULES } from '@ama/shared/constants';
 const WIB = 'Asia/Jakarta';
+
 
 export function formatTime(iso) {
   if (!iso) return '—';
@@ -84,4 +86,20 @@ export function collectionLabel(device) {
 
 export function isStale(device) {
   return worstFreshness(device) === 'stale';
+}
+
+// Warna sinyal client memakai ambang yang sama dengan rule alert (satu sumber angka).
+const SIGNAL_WEAK = ALERT_RULES['client.signal.weak'].threshold;
+const SIGNAL_CRITICAL = ALERT_RULES['client.signal.critical'].threshold;
+
+export const SIGNAL_LABEL = { good: 'bagus', weak: 'lemah', bad: 'sangat lemah' };
+
+// dBm: makin negatif makin lemah. null/kosong → tanpa warna.
+export function signalTone(dbm) {
+  if (dbm === null || dbm === undefined || dbm === '') return null;
+  const v = Number(dbm);
+  if (!Number.isFinite(v)) return null;
+  if (v < SIGNAL_CRITICAL) return 'bad';
+  if (v < SIGNAL_WEAK) return 'weak';
+  return 'good';
 }

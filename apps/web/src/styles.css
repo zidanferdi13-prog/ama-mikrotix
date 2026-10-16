@@ -725,6 +725,20 @@ select[aria-invalid='true'] {
   background: var(--warn-soft);
 }
 
+/* ---------- sinyal client ---------- */
+/* Warna hanya penegas; kata "lemah"/"sangat lemah" selalu ikut ditampilkan.
+   Selektor .table td.* diperlukan agar menang atas .clients-table td. */
+.table td.sig-good {
+  color: var(--ok);
+}
+.table td.sig-weak {
+  color: var(--warn);
+}
+.table td.sig-bad {
+  color: var(--down);
+  font-weight: 600;
+}
+
 /* ---------- tabel ---------- */
 
 .table-wrap {

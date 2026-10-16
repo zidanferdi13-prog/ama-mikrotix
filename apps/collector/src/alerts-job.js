@@ -143,6 +143,32 @@ function shapeInputs(state, atMs) {
   return inputs;
 }
 
+// Snapshot client TERAKHIR per AP (hanya snapshot yang sukses), dipakai memutuskan roaming.
+function latestClientSnapshots(inputs, atMs) {
+  const perDevice = new Map();
+  for (const [deviceId, input] of inputs) {
+    const last = input.points[input.points.length - 1] ?? null;
+    if (!last) continue;
+    const at = Date.parse(last.observed_at);
+    if (!Number.isFinite(at) || atMs - at > ALERT.clientElsewhereMs) continue;
+    perDevice.set(Number(deviceId), { atMs: at, macs: new Set((last.clients ?? []).map((c) => c.mac)) });
+  }
+  return perDevice;
+}
+
+// MAC yang masih terlihat pada snapshot terakhir AP LAIN: itu roaming, bukan hilang.
+function elsewhereFor(snapshots, deviceId) {
+  const map = new Map();
+  for (const [otherId, snap] of snapshots) {
+    if (otherId === Number(deviceId)) continue;
+    for (const mac of snap.macs) {
+      const prev = map.get(mac);
+      if (!prev || snap.atMs > prev.atMs) map.set(mac, { atMs: snap.atMs, deviceId: otherId });
+    }
+  }
+  return map;
+}
+
 async function applyOps(conn, ops, atMs, statusById = new Map()) {
   const at = DT(atMs);
   let created = 0;
@@ -239,6 +265,8 @@ export async function runAlertEval(pool, { atMs = Date.now() } = {}) {
 
     const state = await loadState(conn, atMs);
     const inputs = shapeInputs(state, atMs);
+    // Sekali per siklus: snapshot client terakhir tiap AP (untuk memisahkan roaming dari hilang).
+    const clientSnapshots = latestClientSnapshots(inputs, atMs);
     const openAlerts = state.openRows.map((row) => ({
       id: Number(row.id),
       rule_id: row.rule_id,
@@ -290,6 +318,7 @@ export async function runAlertEval(pool, { atMs = Date.now() } = {}) {
         alerts: byKey,
         apEvaluable,
         healthyClients,
+        seenElsewhere: elsewhereFor(clientSnapshots, id),
       });
       for (const finding of clientFindings) findings.push({ ...finding, device_id: id });
 

@@ -279,6 +279,64 @@ test('skenario 9: hilang satu snapshot bukan disconnect; dua snapshot baru disco
     apEvaluable: true,
   });
   assert.equal(isActive(backFindings, 'client.disconnected', mac), false);
+
+  // Hilang dari AP ini tapi terlihat di AP lain (roaming) → bukan disconnect.
+  const roamingFindings = evaluateClientRules({
+    atMs: T0,
+    deviceId: DEVICE.id,
+    points: gone,
+    alerts: new Map(),
+    apEvaluable: true,
+    seenElsewhere: new Map([[mac, { atMs: T0 - 30_000, deviceId: 2 }]]),
+  });
+  assert.equal(isActive(roamingFindings, 'client.disconnected', mac), false);
+
+  // Terlihat di AP lain lebih lama dari jendela roaming → tetap disconnect.
+  const staleFindings = evaluateClientRules({
+    atMs: T0,
+    deviceId: DEVICE.id,
+    points: gone,
+    alerts: new Map(),
+    apEvaluable: true,
+    seenElsewhere: new Map([[mac, { atMs: T0 - ALERT.clientElsewhereMs - 60_000, deviceId: 2 }]]),
+  });
+  assert.equal(isActive(staleFindings, 'client.disconnected', mac), true);
+
+  // Baris terbuka ikut pulih saat client terlihat di AP lain.
+  const openKey = KEY('client.disconnected', DEVICE.id, mac);
+  const roamBackFindings = evaluateClientRules({
+    atMs: T0,
+    deviceId: DEVICE.id,
+    points: gone,
+    alerts: new Map([[openKey, { id: 5, rule_id: 'client.disconnected', device_id: DEVICE.id, target: mac, dedup_key: openKey, first_seen_at: sec(120), last_seen_at: sec(0) }]]),
+    apEvaluable: true,
+    seenElsewhere: new Map([[mac, { atMs: T0 - 30_000, deviceId: 2 }]]),
+  });
+  assert.equal(isActive(roamBackFindings, 'client.disconnected', mac), false);
+
+  // Tak terlihat sama sekali sepanjang jendela (sudah pergi) → baris terbuka ditutup,
+  // bukan menggantung selamanya.
+  const neverWindow = [point(120, []), point(60, []), point(0, [])];
+  const goneForever = evaluateClientRules({
+    atMs: T0,
+    deviceId: DEVICE.id,
+    points: neverWindow,
+    alerts: new Map([[openKey, { id: 6, rule_id: 'client.disconnected', device_id: DEVICE.id, target: mac, dedup_key: openKey, first_seen_at: sec(120), last_seen_at: sec(0) }]]),
+    apEvaluable: true,
+  });
+  assert.equal(goneForever.some((f) => f.rule_id === 'client.disconnected' && f.target === mac && f.active), false);
+  assert.match(findingOf(goneForever, 'client.disconnected', mac).evidence.note, /jendela evaluasi/);
+
+  // Masih terlihat di dalam jendela (baru hilang) → alert tetap terbuka.
+  const seenThenGone = [point(300, [client(mac)]), point(120, [client(mac)]), point(60, []), point(0, [])];
+  const stillOpen = evaluateClientRules({
+    atMs: T0,
+    deviceId: DEVICE.id,
+    points: seenThenGone,
+    alerts: new Map([[openKey, { id: 7, rule_id: 'client.disconnected', device_id: DEVICE.id, target: mac, dedup_key: openKey, first_seen_at: sec(120), last_seen_at: sec(0) }]]),
+    apEvaluable: true,
+  });
+  assert.equal(isActive(stillOpen, 'client.disconnected', mac), true);
 });
 
 // --- 10. Client flapping berulang ----------------------------------------------

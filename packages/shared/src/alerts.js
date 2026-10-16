@@ -23,6 +23,8 @@ function ms(value) {
   return Number.isFinite(t) ? t : null;
 }
 
+const iso = (value) => (value === null || value === undefined ? null : new Date(value).toISOString());
+
 function valueOf(row, metric) {
   return metric === 'signal_dbm' ? row.signal_dbm : row[metric];
 }
@@ -377,7 +379,7 @@ export function evaluateDeviceRules({ atMs, device, metrics = {}, events = [], a
 // Client hilang→muncul hanya dihitung dari snapshot SUKSES: kegagalan koleksi bukan
 // disconnect. Identitas = MAC + AP; IP tidak dipakai (bisa berubah).
 // points: [{ observed_at, clients: [{mac, signal_dbm, tx_bytes, rx_bytes}] }]
-export function evaluateClientRules({ atMs, deviceId, points = [], alerts = new Map(), apEvaluable = true, healthyClients = null }) {
+export function evaluateClientRules({ atMs, deviceId, points = [], alerts = new Map(), apEvaluable = true, healthyClients = null, seenElsewhere = new Map() }) {
   // Data stale / AP tidak dapat diverifikasi → tidak ada alert client baru (dan alert
   // lama dibiarkan apa adanya).
   if (!apEvaluable) return [];
@@ -419,9 +421,21 @@ export function evaluateClientRules({ atMs, deviceId, points = [], alerts = new 
       }, diagnosisFor('client_rf', 'medium', { healthyClients, apHealthy: true, mac, lastSeenAt: lastSeen }));
     }
 
-    // Disconnect hanya setelah N snapshot sukses beruntun tanpa client (bukan 1).
+    // Disconnect hanya setelah N snapshot sukses beruntun tanpa client (bukan 1) DAN
+    // client itu tidak terlihat di AP lain baru-baru ini (roaming ≠ hilang).
+    const elsewhere = seenElsewhere.get(mac) ?? null;
+    const roaming = elsewhere !== null && atMs - elsewhere.atMs <= ALERT.clientElsewhereMs;
     const goneRule = openOf('client.disconnected');
-    if (goneRun >= ALERT.clientGoneSnapshots) {
+    // ponytail: client yang tak terlihat sepanjang clientWindowMs dianggap sudah pergi
+    // (pulang/dimatikan) → alert ditutup, bukan menumpuk selamanya. Riwayat tetap ada.
+    if (goneRule && seen.length === 0) {
+      push('client.disconnected', false, null, {
+        kind: 'client_disconnected',
+        missing_snapshots: goneRun,
+        window_ms: ALERT.clientWindowMs,
+        note: 'Client tidak terlihat sepanjang jendela evaluasi: dianggap sudah pergi, alert ditutup.',
+      });
+    } else if (goneRun >= ALERT.clientGoneSnapshots && !roaming && seen.length > 0) {
       const goneSince = series[series.length - goneRun].observed_at;
       push('client.disconnected', true, goneRule?.first_seen_at ?? goneSince, {
         kind: 'client_disconnected',
@@ -430,15 +444,17 @@ export function evaluateClientRules({ atMs, deviceId, points = [], alerts = new 
         last_seen_at: lastSeen,
         window_snapshots: series.length,
         next_steps: ['Cek apakah perangkat dimatikan atau berpindah AP', 'Cek riwayat flapping client ini'],
-        note: 'Hilang pada satu snapshot bukan disconnect; butuh 2 snapshot sukses beruntun.',
+        note: 'Hilang pada satu snapshot bukan disconnect; butuh 2 snapshot sukses beruntun dan tidak terlihat di AP lain.',
       }, diagnosisFor('client_gone', 'medium', { healthyClients, apHealthy: true, mac, lastSeenAt: lastSeen }));
-    } else if (goneRule && seenRun >= 1) {
+    } else if (goneRule && (seenRun >= 1 || roaming)) {
       push('client.disconnected', false, null, {
         kind: 'client_disconnected',
         missing_snapshots: goneRun,
-        seen_again_at: seen[seen.length - 1].observed_at,
+        seen_again_at: seen.length ? seen[seen.length - 1].observed_at : null,
         last_seen_at: lastSeen,
-        note: 'Client terlihat kembali pada snapshot terakhir.',
+        roaming_at: elsewhere === null ? null : iso(elsewhere.atMs),
+        roaming_device_id: elsewhere?.deviceId ?? null,
+        note: roaming ? 'Client terlihat di AP lain: roaming, bukan hilang.' : 'Client terlihat kembali pada snapshot terakhir.',
       });
     }
 
