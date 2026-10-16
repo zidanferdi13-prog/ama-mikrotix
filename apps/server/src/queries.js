@@ -1,6 +1,27 @@
 // Query terparameter, tanpa penyambungan string masukan §7.
 import { HISTORY, STALE_MS } from '@ama/shared';
 
+// Rentang /api/summary: tetapkan bucket tetap agar seri maksimum 60 titik.
+export const SUMMARY_RANGES = {
+  '1h': { rangeMs: 60 * 60 * 1000, bucketMs: 60 * 1000 },
+  '6h': { rangeMs: 6 * 60 * 60 * 1000, bucketMs: 6 * 60 * 1000 },
+  '24h': { rangeMs: 24 * 60 * 60 * 1000, bucketMs: 24 * 60 * 1000 },
+};
+
+// Kolom device yang boleh ditulis dari payload tulis.
+const DEVICE_COLUMNS = [
+  'name',
+  'ip',
+  'port',
+  'username',
+  'vendor',
+  'model',
+  'firmware',
+  'host_key_fingerprint',
+  'notes',
+  'enabled',
+];
+
 function freshness(lastValidAt, nowMs, thresholdMs) {
   if (!lastValidAt) return 'no_data';
   const age = nowMs - new Date(lastValidAt).getTime();
@@ -16,9 +37,23 @@ function lastValidOf(rows, field) {
   return { value: null, last_valid_at: null };
 }
 
-export async function listDevices(pool) {
+// Semua nilai waktu ke respons adalah ISO UTC.
+function isoOrNull(value) {
+  if (!value) return null;
+  const date = value instanceof Date ? value : new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date.toISOString();
+}
+
+function sqlTime(iso) {
+  return iso.replace('T', ' ').replace('Z', '');
+}
+
+// `hasSecret` disuntikkan dari app.js (fungsi berkas rahasia) supaya queries.js
+// tetap murni DB: stub pool di uji tidak perlu ikut menyentuh berkas/env.
+export async function listDevices(pool, hasSecret = () => false) {
   const devices = await pool.query(
-    `SELECT id, name, ip, vendor, model, firmware, identity_verified,
+    `SELECT id, name, ip, port, username, vendor, model, firmware,
+            host_key_fingerprint, identity_verified, enabled, notes, secret_updated_at,
             reachable, ping_fail_count, ping_ok_count, last_ping_attempt_at,
             uptime_last_valid_at, load_last_valid_at, ram_last_valid_at,
             system_last_valid_at, last_collection_status
@@ -55,10 +90,17 @@ export async function listDevices(pool) {
       id: device.id,
       name: device.name,
       ip: device.ip,
+      port: device.port,
+      username: device.username,
       vendor: device.vendor,
       model: device.model,
       firmware: device.firmware,
+      host_key_fingerprint: device.host_key_fingerprint,
       identity_verified: Boolean(device.identity_verified),
+      enabled: Boolean(device.enabled),
+      notes: device.notes,
+      has_secret: hasSecret(device.id),
+      secret_updated_at: isoOrNull(device.secret_updated_at),
       reachable: device.reachable,
       collection_status: device.last_collection_status,
       last_ping: lastPing[0]
@@ -81,9 +123,10 @@ export async function listDevices(pool) {
   return result;
 }
 
-export async function getDevice(pool, id) {
+export async function getDevice(pool, id, hasSecret = () => false) {
   const rows = await pool.query(
-    `SELECT id, name, ip, vendor, model, firmware, identity_verified,
+    `SELECT id, name, ip, port, username, vendor, model, firmware,
+            host_key_fingerprint, identity_verified, enabled, notes, secret_updated_at,
             reachable, last_ping_attempt_at, uptime_last_valid_at, load_last_valid_at,
             ram_last_valid_at, system_last_valid_at, last_collection_status
      FROM devices WHERE id = ?`,
@@ -111,10 +154,17 @@ export async function getDevice(pool, id) {
     id: device.id,
     name: device.name,
     ip: device.ip,
+    port: device.port,
+    username: device.username,
     vendor: device.vendor,
     model: device.model,
     firmware: device.firmware,
+    host_key_fingerprint: device.host_key_fingerprint,
     identity_verified: Boolean(device.identity_verified),
+    enabled: Boolean(device.enabled),
+    notes: device.notes,
+    has_secret: hasSecret(device.id),
+    secret_updated_at: isoOrNull(device.secret_updated_at),
     reachable: device.reachable,
     collection_status: device.last_collection_status,
     last_ping_attempt_at: device.last_ping_attempt_at,
@@ -128,10 +178,67 @@ export async function getDevice(pool, id) {
       uptime: freshness(device.uptime_last_valid_at, now, STALE_MS.metric),
       load: freshness(device.load_last_valid_at, now, STALE_MS.metric),
       ram: freshness(device.ram_last_valid_at, now, STALE_MS.metric),
+      system: freshness(device.system_last_valid_at, now, STALE_MS.metric),
     },
     metrics,
     events,
   };
+}
+
+export async function deviceExists(pool, id) {
+  const rows = await pool.query('SELECT id FROM devices WHERE id = ?', [id]);
+  return rows.length > 0;
+}
+
+export async function ipTaken(pool, ip, excludeId = null) {
+  const rows = await pool.query('SELECT id FROM devices WHERE ip = ?', [ip]);
+  return rows.some((row) => excludeId === null || Number(row.id) !== Number(excludeId));
+}
+
+// Kolom dari whitelist DEVICE_COLUMNS; nama kolom tidak pernah berasal dari masukan.
+export async function createDevice(pool, fields) {
+  const keys = DEVICE_COLUMNS.filter((key) => key in fields);
+  const placeholders = keys.map(() => '?').join(', ');
+  const result = await pool.query(
+    `INSERT INTO devices (${keys.join(', ')}) VALUES (${placeholders})`,
+    keys.map((key) => fields[key]),
+  );
+  return Number(result.insertId);
+}
+
+export async function updateDevice(pool, id, fields) {
+  const keys = DEVICE_COLUMNS.filter((key) => key in fields);
+  if (keys.length === 0) return 0;
+  const assignments = keys.map((key) => `${key} = ?`).join(', ');
+  const result = await pool.query(
+    `UPDATE devices SET ${assignments} WHERE id = ?`,
+    [...keys.map((key) => fields[key]), id],
+  );
+  return Number(result.affectedRows ?? 0);
+}
+
+export async function markSecretUpdated(pool, id) {
+  await pool.query('UPDATE devices SET secret_updated_at = UTC_TIMESTAMP(3) WHERE id = ?', [id]);
+}
+
+export async function clearSecretUpdated(pool, id) {
+  await pool.query('UPDATE devices SET secret_updated_at = NULL WHERE id = ?', [id]);
+}
+
+export async function deleteDevice(pool, id) {
+  const result = await pool.query('DELETE FROM devices WHERE id = ?', [id]);
+  return Number(result.affectedRows ?? 0);
+}
+
+// Histori apa pun (metrik atau event) membuat penghapusan ditolak.
+export async function deviceHasHistory(pool, id) {
+  const rows = await pool.query(
+    `SELECT (SELECT COUNT(*) FROM device_metrics WHERE device_id = ?) AS metrics,
+            (SELECT COUNT(*) FROM monitoring_events WHERE device_id = ?) AS events`,
+    [id, id],
+  );
+  const row = rows[0] ?? {};
+  return Number(row.metrics ?? 0) > 0 || Number(row.events ?? 0) > 0;
 }
 
 // Rentang tervalidasi: default 1 jam, maksimum 24 jam.
@@ -146,8 +253,71 @@ export function parseRange(query, now = Date.now()) {
   return { from: new Date(from).toISOString(), to: new Date(to).toISOString() };
 }
 
+// Rentang ringkasan: nama rentang → from/to + satu bucket per titik (maksimum 60 titik).
+export function parseSummaryRange(query, now = Date.now()) {
+  const name = query.range ?? '1h';
+  const config = SUMMARY_RANGES[name];
+  if (!config) return { error: 'invalid_range' };
+  return {
+    name,
+    from: new Date(now - config.rangeMs).toISOString(),
+    to: new Date(now).toISOString(),
+    bucket_ms: config.bucketMs,
+    buckets: Math.round(config.rangeMs / config.bucketMs),
+  };
+}
+
+// Agregasi per bucket di SQL; slot tanpa data tetap null (bukan nol).
+export async function summarySeries(pool, range) {
+  const bucketSec = range.bucket_ms / 1000;
+  const from = sqlTime(range.from);
+  const to = sqlTime(range.to);
+
+  const [latency, ram] = await Promise.all([
+    pool.query(
+      `SELECT device_id, FLOOR(UNIX_TIMESTAMP(observed_at) / ?) AS bucket, AVG(latency_ms) AS value
+       FROM device_metrics
+       WHERE kind = 'ping' AND observed_at BETWEEN ? AND ?
+       GROUP BY device_id, bucket`,
+      [bucketSec, from, to],
+    ),
+    pool.query(
+      `SELECT device_id, FLOOR(UNIX_TIMESTAMP(observed_at) / ?) AS bucket, AVG(memory_used_percent) AS value
+       FROM device_metrics
+       WHERE kind = 'system' AND observed_at BETWEEN ? AND ?
+       GROUP BY device_id, bucket`,
+      [bucketSec, from, to],
+    ),
+  ]);
+
+  const first = Math.floor(Date.parse(range.from) / 1000 / bucketSec);
+
+  function emptySeries() {
+    return { latency: new Array(range.buckets).fill(null), ram: new Array(range.buckets).fill(null) };
+  }
+
+  const series = {};
+  function slot(deviceId) {
+    const key = String(deviceId);
+    series[key] ??= emptySeries();
+    return series[key];
+  }
+
+  function fill(rows, field) {
+    for (const row of rows) {
+      const index = Number(row.bucket) - first;
+      if (index < 0 || index >= range.buckets) continue;
+      slot(row.device_id)[field][index] = row.value === null || row.value === undefined ? null : Number(row.value);
+    }
+  }
+
+  fill(latency, 'latency');
+  fill(ram, 'ram');
+  return series;
+}
+
 export async function getMetrics(pool, id, range, kind) {
-  const params = [id, range.from.replace('T', ' ').replace('Z', ''), range.to.replace('T', ' ').replace('Z', '')];
+  const params = [id, sqlTime(range.from), sqlTime(range.to)];
   let sql = `SELECT observed_at, kind, collection_status, reachable, latency_ms,
                     uptime_seconds, load_1, load_5, load_15,
                     memory_used_bytes, memory_used_percent, metric_status

@@ -1,6 +1,8 @@
-// Entrypoint collector: jadwalkan ping + SSH sistem per AP terdaftar.
-import { COLLECT_INTERVAL_MS, KINDS, normalizeSystemSample } from '@ama/shared';
-import { loadCollectorConfig } from './config.js';
+// Entrypoint collector: jadwalkan ping + SSH sistem per AP aktif di tabel devices.
+// Daftar AP disegarkan berkala dari DB (DEVICE_REFRESH_MS) sehingga tambah,
+// nonaktifkan, atau hapus dari dashboard berlaku tanpa restart collector.
+import { COLLECT_INTERVAL_MS, DEVICE_REFRESH_MS, KINDS, normalizeSystemSample } from '@ama/shared';
+import { listCollectorDevices } from '@ama/db';
 import { createScheduler } from './scheduler.js';
 import { collectPing } from './ping.js';
 import { collectSystem } from './ssh.js';
@@ -10,72 +12,119 @@ import { log } from './logger.js';
 
 const HEARTBEAT_MS = 30_000;
 
-export async function startCollector({ pool, configPath } = {}) {
-  const config = loadCollectorConfig(configPath);
-  const jobs = [];
+export async function startCollector({ pool, refreshMs = DEVICE_REFRESH_MS } = {}) {
+  const devices = new Map(); // id → AP aktif; pekerjaan membacanya saat berjalan agar ip/username baru langsung terpakai
+  const jobs = new Map(); // `${id}:${kind}` → pekerjaan
 
-  for (const device of config.devices) {
-    jobs.push({
-      deviceId: device.id,
-      kind: KINDS.ping,
-      intervalMs: device.pingIntervalMs ?? COLLECT_INTERVAL_MS.ping,
-      run: async () => {
-        const started = Date.now();
-        const sample = await collectPing(device.id, device.ip);
-        const result = await persistPing(pool, sample);
-        log.info({
-          event: 'collect',
-          deviceId: device.id,
-          kind: KINDS.ping,
-          status: sample.collection_status,
-          code: sample.code,
-          durationMs: Date.now() - started,
-        });
-        return result;
-      },
-    });
+  function createJob(deviceId, kind) {
+    if (kind === KINDS.ping) {
+      return {
+        deviceId,
+        kind,
+        intervalMs: COLLECT_INTERVAL_MS.ping,
+        run: async () => {
+          const device = devices.get(deviceId);
+          if (!device) return null; // AP dinonaktifkan/dihapus saat pekerjaan antre
+          const started = Date.now();
+          const sample = await collectPing(deviceId, device.ip);
+          const result = await persistPing(pool, sample);
+          log.info({
+            event: 'collect',
+            deviceId,
+            kind,
+            status: sample.collection_status,
+            code: sample.code,
+            durationMs: Date.now() - started,
+          });
+          return result;
+        },
+      };
+    }
 
-    jobs.push({
-      deviceId: device.id,
-      kind: KINDS.system,
-      intervalMs: device.systemIntervalMs ?? COLLECT_INTERVAL_MS.system,
+    return {
+      deviceId,
+      kind,
+      intervalMs: COLLECT_INTERVAL_MS.system,
       run: async () => {
+        const device = devices.get(deviceId);
+        if (!device) return null;
         const started = Date.now();
-        const { observedAt, outputs, connectError } = await collectSystem(device.id, device);
-        const sample = normalizeSystemSample({ deviceId: device.id, observedAt, outputs });
+        const { observedAt, outputs, connectError } = await collectSystem(deviceId, device);
+        const sample = normalizeSystemSample({ deviceId, observedAt, outputs });
         const result = await persistSystem(pool, sample);
         log.info({
           event: 'collect',
-          deviceId: device.id,
-          kind: KINDS.system,
+          deviceId,
+          kind,
           status: sample.collection_status,
           code: connectError ?? undefined,
           durationMs: Date.now() - started,
         });
         return result;
       },
-    });
+    };
+  }
+
+  // Selaraskan daftar pekerjaan dengan AP aktif; jadwal pekerjaan lama dipertahankan.
+  function ensureJobs(list) {
+    const wanted = new Set();
+    for (const device of list) {
+      devices.set(device.id, device);
+      let added = false;
+      for (const kind of [KINDS.ping, KINDS.system]) {
+        const key = `${device.id}:${kind}`;
+        wanted.add(key);
+        if (jobs.has(key)) continue;
+        jobs.set(key, createJob(device.id, kind));
+        added = true;
+      }
+      if (added) {
+        log.info({ event: 'device_registered', deviceId: device.id, status: `secret:${describeSecretSource(device.id)}` });
+      }
+    }
+
+    for (const [key, job] of [...jobs]) {
+      if (wanted.has(key)) continue;
+      jobs.delete(key);
+      log.info({ event: 'device_unregistered', deviceId: job.deviceId, kind: job.kind, status: 'ok' });
+    }
+    for (const id of [...devices.keys()]) {
+      if (![...jobs.keys()].some((key) => key.startsWith(`${id}:`))) devices.delete(id);
+    }
+
+    scheduler.setJobs([...jobs.values()]);
   }
 
   const scheduler = createScheduler({
-    jobs,
+    jobs: [],
     onError: ({ job, err }) => {
       log.error({ event: 'job_failed', deviceId: job.deviceId, kind: job.kind, code: err?.message ?? 'unknown' });
     },
   });
+
+  async function refreshDevices() {
+    try {
+      ensureJobs(await listCollectorDevices(pool));
+    } catch (err) {
+      // DB tidak tersedia: pertahankan daftar yang ada, jangan hentikan collector.
+      log.error({ event: 'device_refresh_failed', code: err?.message ?? 'unknown' });
+    }
+  }
+
+  await refreshDevices();
   scheduler.start();
 
+  const refreshTimer = setInterval(refreshDevices, refreshMs);
   const heartbeat = setInterval(() => writeHeartbeat(pool), HEARTBEAT_MS);
+  if (typeof refreshTimer.unref === 'function') refreshTimer.unref();
   if (typeof heartbeat.unref === 'function') heartbeat.unref();
-
-  for (const device of config.devices) {
-    log.info({ event: 'device_registered', deviceId: device.id, status: `secret:${describeSecretSource(device.id)}` });
-  }
 
   return {
     scheduler,
+    refreshDevices,
     stop() {
       scheduler.stop();
+      clearInterval(refreshTimer);
       clearInterval(heartbeat);
     },
   };

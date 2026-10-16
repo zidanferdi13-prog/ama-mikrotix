@@ -18,9 +18,8 @@ npm ci
 node node_modules/esbuild/install.js     # npm 11 memblokir install script; tanpa ini build gagal
 npm run build -w @ama/web
 cp .env.example .env                     # isi nilai; lihat §5
-cp config/devices.example.json config/devices.json
 sudo scripts/provision-host.sh           # DB + nginx + systemd + migrasi/seed; idempoten
-sudo systemctl restart ama-collector     # setelah /etc/ama/secrets.json terisi (§5)
+sudo systemctl restart ama-server ama-collector
 curl -s localhost:3001/api/health
 ```
 
@@ -37,7 +36,8 @@ collector  ──(ping + SSH read-only)──► MariaDB ──(baca)──► s
    └── heartbeat ──────────────────────────────────────────►└── /api/health
 ```
 
-- `apps/collector` — ping 15s + SSH 60s per AP, tulis sampel + heartbeat ke DB.
+- `apps/collector` — daftar AP dibaca dari tabel `devices` (disegarkan tiap 15 s), ping 15 s
+  + SSH 60 s per AP aktif, tulis sampel + heartbeat ke DB.
 - `apps/server` — REST API + Socket.IO di port `3001`.
 - `apps/web` — dashboard React (hasil build statis).
 
@@ -72,53 +72,57 @@ npm test
 ## 4. Siapkan database
 
 `scripts/provision-host.sh` membuat database `ama_monitoring`, akun aplikasi berhak minimum
-(`SELECT, INSERT, UPDATE`, jangan `root`), dan file rahasia §5 — lalu menerapkan
+(`SELECT, INSERT, UPDATE, DELETE`, jangan `root`), dan file rahasia §5 — lalu menerapkan
 `db/migrations/*.sql` dan `db/seed/*.sql` sebagai root (akun aplikasi sengaja tanpa hak DDL).
 
 Alternatif tanpa sudo untuk migrasi, bila akun DB di `.env` memang punya hak DDL:
 
 ```bash
-npm run migrate   # db/migrations/*.sql lalu db/seed/*.sql, idempoten (CREATE IF NOT EXISTS)
+npm run migrate   # db/migrations/*.sql lalu db/seed/*.sql, idempoten
 ```
 
-Seed hanya membuat 3 AP + baris heartbeat. Tidak ada halaman CRUD perangkat —
-perubahan inventaris dilakukan lewat SQL.
+`db/seed/001_devices.sql` hanya **mengisi** tiga AP awal bila barisnya belum ada
+(`INSERT IGNORE`). Setelah itu inventaris dipegang tabel `devices` dan diubah dari halaman
+**Perangkat** di dashboard — bukan lagi lewat SQL atau berkas di repo.
 
 ## 5. Konfigurasi dan rahasia
 
 ```bash
 cp .env.example .env
-cp config/devices.example.json config/devices.json
 ```
 
-Isi `.env` (jangan commit):
+Isi `.env` (jangan commit). Nilai dibaca saat service start, jadi setelah mengubahnya
+jalankan `sudo systemctl restart ama-server ama-collector`:
 
 - Kredensial DB: `AMA_DB_HOST`, `AMA_DB_PORT`, `AMA_DB_USER`, `AMA_DB_PASSWORD`, `AMA_DB_NAME`.
 - Auth dashboard: `AMA_AUTH_USER`, `AMA_AUTH_PASSWORD`, `AMA_JWT_SECRET` (acak, panjang).
 - `AMA_WEB_ORIGIN` = origin dashboard sebenarnya (mis. `https://monitor.internal`).
 - Bila di belakang HTTPS: `AMA_COOKIE_SECURE=true`.
+- `AMA_DEVICE_REFRESH_MS` (default `15000`) — jeda collector menyegarkan daftar AP dari DB.
 
-Isi `config/devices.json` (tanpa rahasia): `id`, `name`, `ip`, `username`, `port`,
-dan `hostKeyFingerprint` format `sha256:...` per AP.
+Inventaris AP (nama, ip, port, username, vendor/model/firmware, catatan, aktif/nonaktif)
+ada di tabel `devices` dan diubah dari halaman **Perangkat**: tambah, ubah, nonaktifkan,
+hapus (hanya bila AP belum punya histori), dan atur rahasia.
 
-Rahasia SSH **tidak boleh** masuk `config/devices.json`, Git, argumen command line, atau log.
-Dua opsi:
+Fingerprint host key diambil lewat tombol **Uji & ambil fingerprint** pada form; hasilnya
+baru dipakai setelah Anda menekan simpan. Fingerprint kosong → koleksi ditolak dengan
+`host_key_unpinned`. Ini disengaja: verifikasi host key tidak boleh dimatikan dan fingerprint
+tidak pernah dipercaya otomatis, jadi jangan pakai `StrictHostKeyChecking=no`.
 
-- Env: `AMA_DEVICE_1_PASSWORD=...` (satu per `devices.id`).
-- File di luar repo: `AMA_SECRETS_FILE=/etc/ama/secrets.json`
+Rahasia SSH **tidak boleh** masuk DB, Git, argumen command line, atau log. Dua opsi:
 
-  ```json
-  { "1": "<password-AP1>", "2": "<password-AP2>", "3": "<password-AP3>" }
-  ```
+- File di luar repo (dipakai host ini): `AMA_SECRETS_FILE=/etc/ama/secrets.json`, berisi
+  `{ "1": "<password-AP1>", "2": "<password-AP2>" }` dengan kunci `devices.id`, mode `600`,
+  dimiliki user layanan. Server menulis berkas ini saat password diisi dari halaman
+  Perangkat (temp + rename), dan collector membacanya ulang setiap kali menyambung — tidak
+  perlu restart.
 
   ```bash
   chmod 600 /etc/ama/secrets.json
   chown ama:ama /etc/ama/secrets.json
   ```
 
-`hostKeyFingerprint` kosong → koleksi ditolak dengan `host_key_unpinned`. Ini disengaja:
-verifikasi host key tidak boleh dimatikan. Ambil fingerprint tepercaya lewat kanal aman,
-jangan dengan `StrictHostKeyChecking=no`.
+- Env: `AMA_DEVICE_<id>_PASSWORD=...` (menang atas berkas), berguna untuk uji sementara.
 
 ## 6. Build dashboard
 
@@ -218,9 +222,9 @@ Penting: collector mati berarti data **stale**. Jangan tampilkan itu sebagai "se
 
 ## 10. Pemecahan masalah
 
-- **`code:no_secret` pada log `collect`** — berkas rahasia tidak ada/tidak terbaca untuk AP itu.
-  Cek entri `"<device id>"` dan izin `AMA_SECRETS_FILE`. Isi berkas di-cache saat pertama
-  dibaca, jadi **restart collector** setelah mengubahnya.
+- **`code:no_secret` pada log `collect`** — belum ada entri rahasia untuk `devices.id` itu.
+  Isi password lewat halaman Perangkat (atau berkas `AMA_SECRETS_FILE`); collector membaca
+  berkas itu ulang setiap siklus sehingga tidak perlu restart.
 - **`job_failed` pada log collector** — kegagalan di luar dugaan (bukan kegagalan koneksi);
   `code` berisi pesan error. Kegagalan koneksi/SSH justru muncul sebagai `collect` dengan
   `status:error`, bukan `job_failed`.
@@ -256,6 +260,21 @@ Diputuskan saat deploy ke host ini (2026-10):
 - **OS/lokasi server** — Raspberry Pi, Debian 13 arm64, `192.168.0.103`, tidak diekspos ke internet.
 - **TLS** — belum. nginx listen 80 di LAN, `AMA_COOKIE_SECURE=false`. Pasang TLS sebelum
   diakses dari luar LAN.
+
+Diputuskan saat pengelolaan perangkat dipindah ke dashboard (2026-10):
+
+- **DB jadi sumber tunggal daftar AP** — `config/devices.json` dan `AMA_CONFIG` dihapus,
+  fingerprint awal dipindah ke migrasi `003` + seed. Alasan: tambah AP butuh id otomatis
+  (kunci rahasia), dan collector cukup polling 15 s sehingga tidak perlu restart.
+- **Seed `INSERT IGNORE`, bukan `ON DUPLICATE KEY UPDATE`** — provision ulang tidak boleh
+  menimpa perubahan yang dilakukan operator dari dashboard.
+- **Rahasia tetap di berkas eksternal**, bukan DB: server menulis `/etc/ama/secrets.json`
+  secara atomik (temp + rename) sebagai user layanan, sehingga tidak perlu sudo.
+- **Probe fingerprint tidak auto-trust** — tombol "Uji & ambil fingerprint" + simpan manual,
+  mencegah mempercayai host key secara buta.
+- **Hapus perangkat ditolak bila punya histori** (`409 device_has_history`) — alternatifnya
+  nonaktifkan (`enabled=0`), supaya tidak ada data monitoring hilang karena salah klik.
+- **Akun aplikasi mendapat `DELETE`** (`provision-host.sh`) — dibutuhkan fitur hapus.
 
 Masih terbuka:
 

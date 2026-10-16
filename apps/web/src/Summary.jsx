@@ -1,137 +1,272 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
+import { api } from './api.js';
+import Chart from './Chart.jsx';
+import { FreshnessBadge, ReachabilityBadge } from './Badge.jsx';
 import {
-  REACHABLE_LABEL,
   FRESHNESS_LABEL,
-  reachabilityOf,
-  collectionLabel,
   formatRelative,
   formatTime,
+  formatUptime,
+  isStale,
   num,
+  reachabilityOf,
+  worstFreshness,
 } from './format.js';
 
-export default function Summary({ devices, alerts, loading, onSelect }) {
+const SPARK_RANGE = '24h';
+
+// Baris angka/nol → titik {x, y}; null tetap null supaya gap tidak diinterpolasi.
+const toPoints = (values) => (Array.isArray(values) ? values.map((y, x) => ({ x, y })) : []);
+
+export default function Summary({ devices, alerts, loading, refreshKey, onSelect, onManage }) {
   const [query, setQuery] = useState('');
-  const [filter, setFilter] = useState('all');
+  const [reachFilter, setReachFilter] = useState('all');
+  const [freshFilter, setFreshFilter] = useState('all');
+  const [summary, setSummary] = useState(null);
+  const [summaryFailed, setSummaryFailed] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .summary(SPARK_RANGE)
+      .then((data) => {
+        if (cancelled) return;
+        setSummary(data);
+        setSummaryFailed(false);
+      })
+      .catch((err) => {
+        if (!cancelled && err.status !== 401) setSummaryFailed(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [refreshKey]);
 
   const counts = useMemo(() => {
-    const base = { total: devices.length, up: 0, down: 0, unknown: 0 };
-    for (const d of devices) base[reachabilityOf(d)] += 1;
+    const base = { total: devices.length, up: 0, down: 0, unknown: 0, stale: 0 };
+    for (const device of devices) {
+      base[reachabilityOf(device)] += 1;
+      if (isStale(device)) base.stale += 1;
+    }
     return base;
   }, [devices]);
 
+  const seriesByDevice = useMemo(() => {
+    const map = new Map();
+    for (const row of summary?.devices ?? []) map.set(row.id, row.series ?? {});
+    return map;
+  }, [summary]);
+
   const visible = useMemo(() => {
     const q = query.trim().toLowerCase();
-    return devices.filter((d) => {
-      if (q && !`${d.name} ${d.ip}`.toLowerCase().includes(q)) return false;
-      if (filter === 'all') return true;
-      if (filter === 'stale') return Object.values(d.freshness ?? {}).some((f) => f === 'stale');
-      return reachabilityOf(d) === filter;
+    return devices.filter((device) => {
+      if (q && !`${device.name} ${device.ip}`.toLowerCase().includes(q)) return false;
+      if (reachFilter !== 'all' && reachabilityOf(device) !== reachFilter) return false;
+      if (freshFilter !== 'all' && worstFreshness(device) !== freshFilter) return false;
+      return true;
     });
-  }, [devices, query, filter]);
+  }, [devices, query, reachFilter, freshFilter]);
 
-  if (loading) return <p className="center">Memuat data…</p>;
+  const filtered = reachFilter !== 'all' || freshFilter !== 'all';
+
+  if (loading) {
+    return (
+      <div className="page">
+        <div className="kpi-strip" aria-hidden="true">
+          {[0, 1, 2, 3, 4].map((i) => (
+            <div key={i} className="skeleton skeleton-lg" />
+          ))}
+        </div>
+        <p className="center">Memuat data…</p>
+      </div>
+    );
+  }
 
   return (
-    <main className="content">
-      <section className="cards" aria-label="Ringkasan status">
-        <Card label="Total AP" value={counts.total} />
-        <Card label="Terjangkau" value={counts.up} tone="ok" />
-        <Card label="Tidak terjangkau" value={counts.down} tone="down" />
-        <Card label="Belum diketahui" value={counts.unknown} tone="unknown" />
-      </section>
+    <div className="page">
+      <div className="layout-aside">
+        <div className="stack">
+          <section className="kpi-strip" aria-label="Ringkasan status">
+            <Kpi
+              label="Total AP"
+              value={counts.total}
+              pressed={reachFilter === 'all' && freshFilter === 'all'}
+              onClick={() => {
+                setReachFilter('all');
+                setFreshFilter('all');
+              }}
+            />
+            <Kpi
+              label="Terjangkau"
+              value={counts.up}
+              tone="ok"
+              pressed={reachFilter === 'up'}
+              onClick={() => setReachFilter(reachFilter === 'up' ? 'all' : 'up')}
+            />
+            <Kpi
+              label="Tidak terjangkau"
+              value={counts.down}
+              tone="down"
+              pressed={reachFilter === 'down'}
+              onClick={() => setReachFilter(reachFilter === 'down' ? 'all' : 'down')}
+            />
+            <Kpi
+              label="Belum diketahui"
+              value={counts.unknown}
+              tone="unknown"
+              pressed={reachFilter === 'unknown'}
+              onClick={() => setReachFilter(reachFilter === 'unknown' ? 'all' : 'unknown')}
+            />
+            <Kpi
+              label="Data lama"
+              value={counts.stale}
+              tone="stale"
+              pressed={freshFilter === 'stale'}
+              onClick={() => setFreshFilter(freshFilter === 'stale' ? 'all' : 'stale')}
+            />
+          </section>
 
-      <section className="toolbar">
-        <label>
-          Cari nama/IP
-          <input value={query} onChange={(e) => setQuery(e.target.value)} type="search" />
-        </label>
-        <label>
-          Filter
-          <select value={filter} onChange={(e) => setFilter(e.target.value)}>
-            <option value="all">Semua</option>
-            <option value="up">Terjangkau</option>
-            <option value="down">Tidak terjangkau</option>
-            <option value="unknown">Belum diketahui</option>
-            <option value="stale">Data lama</option>
-          </select>
-        </label>
-      </section>
+          <section className="panel toolbar" aria-label="Pencarian dan filter">
+            <div className="field">
+              <label htmlFor="ap-search">Cari nama/IP</label>
+              <input
+                id="ap-search"
+                type="search"
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                placeholder="mis. ap-lantai2"
+              />
+            </div>
+            <div className="field">
+              <label htmlFor="fresh-filter">Kesegaran</label>
+              <select id="fresh-filter" value={freshFilter} onChange={(event) => setFreshFilter(event.target.value)}>
+                <option value="all">Semua</option>
+                <option value="fresh">{FRESHNESS_LABEL.fresh}</option>
+                <option value="stale">{FRESHNESS_LABEL.stale}</option>
+                <option value="no_data">{FRESHNESS_LABEL.no_data}</option>
+              </select>
+            </div>
+            {filtered && (
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={() => {
+                  setReachFilter('all');
+                  setFreshFilter('all');
+                }}
+              >
+                Bersihkan filter
+              </button>
+            )}
+            <p className="sub" aria-live="polite">
+              Menampilkan {visible.length} dari {devices.length} AP
+            </p>
+          </section>
 
-      {devices.length === 0 ? (
-        <p className="banner">Belum ada perangkat terdaftar.</p>
-      ) : (
-        <table className="table">
-          <caption className="sr-only">Daftar AP dengan status keterjangkauan dan metrik terakhir</caption>
-          <thead>
-            <tr>
-              <th scope="col">Nama</th>
-              <th scope="col">IP</th>
-              <th scope="col">Keterjangkauan</th>
-              <th scope="col">Koleksi sistem</th>
-              <th scope="col">Latency</th>
-              <th scope="col">RAM</th>
-              <th scope="col">Data terakhir</th>
-            </tr>
-          </thead>
-          <tbody>
-            {visible.map((d) => {
-              const reach = reachabilityOf(d);
-              const ram = d.metrics?.memory_used_percent;
-              const ramFresh = d.freshness?.ram;
-              return (
-                <tr key={d.id} onClick={() => onSelect(d.id)} tabIndex={0} onKeyDown={(e) => e.key === 'Enter' && onSelect(d.id)}>
-                  <th scope="row">{d.name}</th>
-                  <td>{d.ip}</td>
-                  <td>
-                    <StatusBadge tone={reach} label={REACHABLE_LABEL[reach]} />
-                    {ramFresh === 'stale' && reach === 'up' && d.collection_status !== 'ok' && (
-                      <span className="sub"> pengambilan metrik gagal</span>
-                    )}
-                  </td>
-                  <td>{collectionLabel(d)}</td>
-                  <td>{d.last_ping ? `${num(d.last_ping.latency_ms, 1)} ms` : '—'}</td>
-                  <td>
-                    {num(ram?.value, 1)}%
-                    <span className="sub"> {FRESHNESS_LABEL[ramFresh] ?? ''}</span>
-                  </td>
-                  <td>{formatRelative(d.last_ping?.observed_at ?? d.metrics?.memory_used_percent?.last_valid_at)}</td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      )}
+          {devices.length === 0 ? (
+            <section className="panel">
+              <p>Belum ada perangkat terdaftar.</p>
+              <button type="button" className="btn btn-primary" onClick={onManage}>
+                Tambah AP di halaman Perangkat
+              </button>
+            </section>
+          ) : visible.length === 0 ? (
+            <p className="banner">Tidak ada AP yang cocok dengan pencarian/filter.</p>
+          ) : (
+            <section className="ap-grid" aria-label="Daftar AP">
+              {visible.map((device) => (
+                <ApCard
+                  key={device.id}
+                  device={device}
+                  series={seriesByDevice.get(device.id) ?? null}
+                  onSelect={() => onSelect(device.id)}
+                />
+              ))}
+            </section>
+          )}
 
-      <section aria-label="Event terbaru">
-        <h2>Event terbaru</h2>
-        {alerts.length === 0 ? (
-          <p className="banner">Belum ada event.</p>
-        ) : (
-          <ul className="events">
-            {alerts.map((a) => (
-              <li key={a.id}>
-                <span>{formatTime(a.started_at)}</span>
-                <span>{a.device_name}</span>
-                <span>{a.detail?.transition ?? a.type}</span>
-                <span>{a.status}</span>
-              </li>
-            ))}
-          </ul>
-        )}
-      </section>
-    </main>
-  );
-}
+          {summaryFailed && (
+            <p className="banner banner-info">Sparkline 24 jam tidak tersedia (gagal memuat /api/summary).</p>
+          )}
+        </div>
 
-function Card({ label, value, tone }) {
-  return (
-    <div className={`card stat ${tone ? `stat-${tone}` : ''}`}>
-      <span className="stat-value">{value}</span>
-      <span className="stat-label">{label}</span>
+        <aside className="stack" aria-label="Event terbaru">
+          <section className="panel">
+            <h3>Event terbaru</h3>
+            {alerts.length === 0 ? (
+              <p className="sub">Belum ada event.</p>
+            ) : (
+              <ul className="events">
+                {alerts.map((alert) => (
+                  <li key={alert.id}>
+                    <span className="event-head">
+                      <span className="event-name">{alert.device_name ?? '—'}</span>
+                      <span className="sub">{formatRelative(alert.started_at)}</span>
+                    </span>
+                    <span>{alert.detail?.transition ?? alert.type}</span>
+                    <p className="sub">
+                      {formatTime(alert.started_at)} · {alert.status}
+                    </p>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+        </aside>
+      </div>
     </div>
   );
 }
 
-export function StatusBadge({ tone, label }) {
-  return <span className={`badge badge-${tone}`}>{label}</span>;
+function Kpi({ label, value, tone, pressed, onClick }) {
+  return (
+    <button
+      type="button"
+      className={`kpi${tone ? ` kpi-${tone}` : ''}`}
+      aria-pressed={pressed}
+      onClick={onClick}
+    >
+      <span className="kpi-value">{value}</span>
+      <span className="kpi-label">{label}</span>
+    </button>
+  );
+}
+
+function Metric({ label, children }) {
+  return (
+    <span className="ap-metric">
+      <span className="ap-metric-value">{children}</span>
+      <span className="ap-metric-label">{label}</span>
+    </span>
+  );
+}
+
+function ApCard({ device, series, onSelect }) {
+  const latency = device.last_ping?.latency_ms;
+  const ram = device.metrics?.memory_used_percent?.value;
+  const latencySeries = toPoints(series?.latency);
+  const ramSeries = toPoints(series?.ram);
+  return (
+    <button type="button" className="ap-card" onClick={onSelect}>
+      <span className="ap-card-head">
+        <span className="ap-name">{device.name}</span>
+        <ReachabilityBadge device={device} />
+      </span>
+      <span className="mono sub">{device.ip}</span>
+      <span className="ap-metrics">
+        <Metric label="Latency">{latency === null || latency === undefined ? '—' : `${num(latency, 1)} ms`}</Metric>
+        <Metric label="RAM">{ram === null || ram === undefined ? '—' : `${num(ram, 1)} %`}</Metric>
+        <Metric label="Uptime">{formatUptime(device.metrics?.uptime_seconds?.value)}</Metric>
+        <Metric label="Kesegaran">
+          <FreshnessBadge freshness={worstFreshness(device)} />
+        </Metric>
+      </span>
+      <span className="ap-spark">
+        <span className="sub">Latency {SPARK_RANGE}</span>
+        <Chart compact values={latencySeries} label="Latency 24 jam" unit="ms" />
+        <span className="sub">RAM {SPARK_RANGE}</span>
+        <Chart compact values={ramSeries} label="RAM 24 jam" unit="%" />
+      </span>
+    </button>
+  );
 }

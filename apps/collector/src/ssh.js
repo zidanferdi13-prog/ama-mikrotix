@@ -4,7 +4,7 @@ import { Client } from 'ssh2';
 import { TIMEOUT_MS, SYSTEM_COMMANDS } from '@ama/shared';
 import { resolveSshAuth } from './secrets.js';
 
-// Verifikasi host key: bandingkan dengan fingerprint tepercaya dari config.
+// Verifikasi host key: bandingkan dengan fingerprint tepercaya dari tabel devices.
 // Host key berubah → hentikan koleksi dan laporkan.
 function verifyHostKey(hostHash, expectedFingerprint) {
   const fingerprint = `sha256:${createHash('sha256').update(Buffer.from(hostHash, 'hex')).digest('base64')}`;

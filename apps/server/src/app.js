@@ -8,13 +8,36 @@ import {
   listAlerts,
   getHealth,
   parseRange,
+  parseSummaryRange,
+  summarySeries,
+  createDevice,
+  updateDevice,
+  deleteDevice,
+  deviceExists,
+  deviceHasHistory,
+  ipTaken,
+  markSecretUpdated,
+  clearSecretUpdated,
 } from './queries.js';
+import { parseDeviceInput, parseProbeInput } from './device-input.js';
+import { hasSecret as hasStoredSecret, setSecret, removeSecret } from './secrets-file.js';
+import { probeHostKey } from './ssh-probe.js';
+import { log } from './logger.js';
 
 function isInt(value) {
   return /^\d+$/.test(String(value));
 }
 
-export function createApp({ pool, allowedOrigin }) {
+// Pelanggaran indeks unik ip (balapan dengan pre-check) tetap dilaporkan sebagai 409.
+function isDuplicateKey(err) {
+  return err?.code === 'ER_DUP_ENTRY' || err?.errno === 1062;
+}
+
+function emptySeries(buckets) {
+  return { latency: new Array(buckets).fill(null), ram: new Array(buckets).fill(null) };
+}
+
+export function createApp({ pool, allowedOrigin, probe = probeHostKey }) {
   const app = express();
   app.use(express.json({ limit: '64kb' }));
   app.use(cookieParser());
@@ -25,7 +48,7 @@ export function createApp({ pool, allowedOrigin }) {
       res.setHeader('Access-Control-Allow-Origin', allowedOrigin);
       res.setHeader('Access-Control-Allow-Credentials', 'true');
       res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-      res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
+      res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PATCH,DELETE,OPTIONS');
     }
     if (req.method === 'OPTIONS') return res.sendStatus(204);
     return next();
@@ -59,20 +82,145 @@ export function createApp({ pool, allowedOrigin }) {
     res.status(health.ok ? 200 : 503).json(health);
   });
 
+  // Didaftarkan sebelum rute :id supaya 'probe' tidak pernah dibaca sebagai id.
+  app.post('/api/devices/probe', requireAuth, async (req, res, next) => {
+    try {
+      const parsed = parseProbeInput(req.body ?? {});
+      if (!parsed.ok) return res.status(400).json({ error: 'invalid_payload', fields: parsed.fields });
+      const result = await probe(parsed.value);
+      if (!result.ok) return res.status(502).json({ error: 'probe_failed', code: result.code });
+      return res.json({ fingerprint: result.fingerprint });
+    } catch (err) {
+      return next(err);
+    }
+  });
+
   app.get('/api/devices', requireAuth, async (req, res, next) => {
     try {
-      res.json({ devices: await listDevices(pool) });
+      res.json({ devices: await listDevices(pool, hasStoredSecret) });
     } catch (err) {
       next(err);
+    }
+  });
+
+  app.post('/api/devices', requireAuth, async (req, res, next) => {
+    try {
+      const parsed = parseDeviceInput(req.body ?? {});
+      if (!parsed.ok) return res.status(400).json({ error: 'invalid_payload', fields: parsed.fields });
+      const { fields, password } = parsed.value;
+      if (await ipTaken(pool, fields.ip)) return res.status(409).json({ error: 'ip_taken' });
+
+      const id = await createDevice(pool, fields);
+      log.info({ event: 'device_created', deviceId: id, user: req.user });
+      if (password !== null) {
+        setSecret(id, password);
+        await markSecretUpdated(pool, id);
+        log.info({ event: 'device_secret_set', deviceId: id, user: req.user });
+      }
+      return res.status(201).json({ device: await getDevice(pool, id, hasStoredSecret) });
+    } catch (err) {
+      if (isDuplicateKey(err)) return res.status(409).json({ error: 'ip_taken' });
+      return next(err);
+    }
+  });
+
+  app.get('/api/summary', requireAuth, async (req, res, next) => {
+    try {
+      const range = parseSummaryRange(req.query);
+      if (range.error) return res.status(400).json({ error: range.error });
+      const devices = await listDevices(pool, hasStoredSecret);
+      const series = await summarySeries(pool, range);
+
+      // stale = data sistem perangkat sudah lewat ambang kesegaran.
+      const counts = { total: devices.length, up: 0, down: 0, unknown: 0, stale: 0 };
+      for (const device of devices) {
+        if (device.reachable === 'up') counts.up += 1;
+        else if (device.reachable === 'down') counts.down += 1;
+        else counts.unknown += 1;
+        if (device.freshness.system === 'stale') counts.stale += 1;
+      }
+
+      return res.json({
+        from: range.from,
+        to: range.to,
+        bucket_ms: range.bucket_ms,
+        counts,
+        devices: devices.map((device) => ({
+          ...device,
+          series: series[String(device.id)] ?? emptySeries(range.buckets),
+        })),
+      });
+    } catch (err) {
+      return next(err);
     }
   });
 
   app.get('/api/devices/:id', requireAuth, async (req, res, next) => {
     try {
       if (!isInt(req.params.id)) return res.status(400).json({ error: 'invalid_id' });
-      const device = await getDevice(pool, Number(req.params.id));
+      const device = await getDevice(pool, Number(req.params.id), hasStoredSecret);
       if (!device) return res.status(404).json({ error: 'not_found' });
       return res.json(device);
+    } catch (err) {
+      return next(err);
+    }
+  });
+
+  app.patch('/api/devices/:id', requireAuth, async (req, res, next) => {
+    try {
+      // Id non-numerik tidak pernah ada → 404, bukan 400.
+      if (!isInt(req.params.id)) return res.status(404).json({ error: 'not_found' });
+      const parsed = parseDeviceInput(req.body ?? {}, { partial: true });
+      if (!parsed.ok) return res.status(400).json({ error: 'invalid_payload', fields: parsed.fields });
+
+      const id = Number(req.params.id);
+      const { fields, password } = parsed.value;
+      if (fields.ip !== undefined && (await ipTaken(pool, fields.ip, id))) {
+        return res.status(409).json({ error: 'ip_taken' });
+      }
+      if (!(await deviceExists(pool, id))) return res.status(404).json({ error: 'not_found' });
+
+      await updateDevice(pool, id, fields);
+      log.info({ event: 'device_updated', deviceId: id, user: req.user });
+      if (password !== null) {
+        setSecret(id, password);
+        await markSecretUpdated(pool, id);
+        log.info({ event: 'device_secret_set', deviceId: id, user: req.user });
+      }
+      return res.json({ device: await getDevice(pool, id, hasStoredSecret) });
+    } catch (err) {
+      if (isDuplicateKey(err)) return res.status(409).json({ error: 'ip_taken' });
+      return next(err);
+    }
+  });
+
+  app.delete('/api/devices/:id', requireAuth, async (req, res, next) => {
+    try {
+      if (!isInt(req.params.id)) return res.status(404).json({ error: 'not_found' });
+      const id = Number(req.params.id);
+      if (!(await deviceExists(pool, id))) return res.status(404).json({ error: 'not_found' });
+      // Muncul di histori → jangan hapus apa pun.
+      if (await deviceHasHistory(pool, id)) return res.status(409).json({ error: 'device_has_history' });
+
+      await deleteDevice(pool, id);
+      removeSecret(id);
+      log.info({ event: 'device_deleted', deviceId: id, user: req.user });
+      return res.status(204).end();
+    } catch (err) {
+      return next(err);
+    }
+  });
+
+  app.delete('/api/devices/:id/secret', requireAuth, async (req, res, next) => {
+    try {
+      if (!isInt(req.params.id)) return res.status(404).json({ error: 'not_found' });
+      const id = Number(req.params.id);
+      if (!(await deviceExists(pool, id))) return res.status(404).json({ error: 'not_found' });
+
+      removeSecret(id);
+      await clearSecretUpdated(pool, id);
+      log.info({ event: 'device_secret_removed', deviceId: id, user: req.user });
+      return res.status(204).end();
     } catch (err) {
       return next(err);
     }
@@ -87,7 +235,7 @@ export function createApp({ pool, allowedOrigin }) {
       if (kind && kind !== 'ping' && kind !== 'system') {
         return res.status(400).json({ error: 'invalid_kind' });
       }
-      const device = await getDevice(pool, Number(req.params.id));
+      const device = await getDevice(pool, Number(req.params.id), hasStoredSecret);
       if (!device) return res.status(404).json({ error: 'not_found' });
       const metrics = await getMetrics(pool, Number(req.params.id), range, kind);
       return res.json({ device_id: Number(req.params.id), from: range.from, to: range.to, metrics });

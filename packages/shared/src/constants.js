@@ -5,6 +5,10 @@ export const COLLECT_INTERVAL_MS = {
   system: 60_000,
 };
 
+// Collector menyegarkan daftar AP dari DB sesering ini (tambah/nonaktif/hapus
+// dari dashboard berlaku tanpa restart).
+export const DEVICE_REFRESH_MS = 15_000;
+
 export const CONCURRENCY = {
   ping: 2,
   system: 2,

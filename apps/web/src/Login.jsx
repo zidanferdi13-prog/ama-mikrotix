@@ -25,29 +25,33 @@ export default function Login({ onSuccess }) {
   return (
     <div className="center">
       <form className="card login" onSubmit={submit}>
-        <h1>Project Monitoring AP</h1>
-        <label htmlFor="username">Nama pengguna</label>
-        <input
-          id="username"
-          autoComplete="username"
-          value={username}
-          onChange={(e) => setUsername(e.target.value)}
-          required
-        />
-        <label htmlFor="password">Kata sandi</label>
-        <input
-          id="password"
-          type="password"
-          autoComplete="current-password"
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
-          required
-        />
-        <button type="submit" disabled={busy}>
+        <h1>Monitoring AP</h1>
+        <div className="field">
+          <label htmlFor="username">Nama pengguna</label>
+          <input
+            id="username"
+            autoComplete="username"
+            value={username}
+            onChange={(event) => setUsername(event.target.value)}
+            required
+          />
+        </div>
+        <div className="field">
+          <label htmlFor="password">Kata sandi</label>
+          <input
+            id="password"
+            type="password"
+            autoComplete="current-password"
+            value={password}
+            onChange={(event) => setPassword(event.target.value)}
+            required
+          />
+        </div>
+        <button type="submit" className="btn btn-primary" disabled={busy}>
           {busy ? 'Memproses…' : 'Masuk'}
         </button>
         {message && (
-          <p className="banner error" role="alert">
+          <p className="banner banner-error" role="alert">
             {message}
           </p>
         )}

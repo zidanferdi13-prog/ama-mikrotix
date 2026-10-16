@@ -33,7 +33,7 @@ mysql --protocol=socket -uroot <<SQL
 CREATE DATABASE IF NOT EXISTS \`$DB_NAME\` CHARACTER SET utf8mb4;
 CREATE USER IF NOT EXISTS '$DB_USER'@'127.0.0.1' IDENTIFIED BY '$DB_PASS';
 ALTER USER '$DB_USER'@'127.0.0.1' IDENTIFIED BY '$DB_PASS';
-GRANT SELECT, INSERT, UPDATE ON \`$DB_NAME\`.* TO '$DB_USER'@'127.0.0.1';
+GRANT SELECT, INSERT, UPDATE, DELETE ON \`$DB_NAME\`.* TO '$DB_USER'@'127.0.0.1';
 FLUSH PRIVILEGES;
 SQL
 
@@ -44,10 +44,12 @@ for f in "$REPO"/db/migrations/*.sql "$REPO"/db/seed/*.sql; do
 done
 
 # --- 3. file rahasia SSH (di luar repo, 600) ---
+# Ditulis server saat password diisi dari halaman Perangkat; direktori harus
+# bisa ditulis user layanan (temp + rename) karena itu dimiliki $RUN_USER.
 SECRETS_FILE="/etc/ama/secrets.json"
 install -d -m 750 -o "$RUN_USER" -g "$RUN_USER" /etc/ama
 if [[ ! -f "$SECRETS_FILE" ]]; then
-  printf '{\n  "1": "",\n  "2": "",\n  "3": ""\n}\n' > "$SECRETS_FILE"
+  printf '{}\n' > "$SECRETS_FILE"
 fi
 chown "$RUN_USER:$RUN_USER" "$SECRETS_FILE"
 chmod 600 "$SECRETS_FILE"
@@ -125,7 +127,7 @@ systemctl enable --now ama-server ama-collector
 
 echo
 echo "selesai. langkah berikut:"
-echo "  1. isi password SSH AP di $SECRETS_FILE  (3 entri)"
-echo "  2. npm run migrate                         # alternatif: butuh akun DB berhak DDL"
-echo "  3. curl -s localhost:3001/api/health"
-echo "  4. systemctl restart ama-collector"
+echo "  1. systemctl restart ama-server ama-collector   # wajib: unit memuat .env saat start"
+echo "  2. curl -s localhost:3001/api/health"
+echo "  3. buka dashboard http://<ip-host>/ lalu isi password SSH AP di halaman Perangkat"
+echo "     (password tersimpan di $SECRETS_FILE, tidak pernah masuk DB)"

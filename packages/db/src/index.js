@@ -30,3 +30,5 @@ export async function checkDb(pool) {
     return { ok: false, code: 'db_unavailable' };
   }
 }
+
+export { listCollectorDevices } from './devices.js';

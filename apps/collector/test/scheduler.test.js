@@ -95,3 +95,36 @@ test('kegagalan satu pekerjaan tidak menghentikan scheduler', async () => {
   await scheduler.tick();
   assert.equal(second, 2);
 });
+
+test('setJobs: AP baru mulai dikoleksi tanpa mereset jadwal AP lama, AP yang dilepas berhenti', async () => {
+  let clock = 0;
+  const runs = [];
+  const job = (deviceId) => ({
+    deviceId,
+    kind: 'ping',
+    intervalMs: 10_000,
+    run: async () => {
+      runs.push(deviceId);
+    },
+  });
+  const scheduler = createScheduler({ jobs: [job(1)], tickMs: 1000, now: () => clock });
+
+  clock = 10_001;
+  await scheduler.tick();
+  await new Promise((r) => setImmediate(r));
+  assert.deepEqual(runs, [1]);
+
+  // AP ditambahkan dari dashboard: jadwal AP 1 tidak ikut direset.
+  scheduler.setJobs([job(1), job(2)]);
+  clock = 20_002;
+  await scheduler.tick();
+  await new Promise((r) => setImmediate(r));
+  assert.deepEqual(runs, [1, 1, 2]);
+
+  // AP 1 dinonaktifkan: hanya AP 2 yang berjalan.
+  scheduler.setJobs([job(2)]);
+  clock = 30_003;
+  await scheduler.tick();
+  await new Promise((r) => setImmediate(r));
+  assert.deepEqual(runs, [1, 1, 2, 2]);
+});

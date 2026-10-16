@@ -1,7 +1,8 @@
 # Project Monitoring AP
 
-Dashboard internal untuk memantau 3 access point (AP): keterjangkauan (ping) dan
-metrik sistem (uptime, load, RAM) via SSH **read-only**. Hasil disimpan di MariaDB,
+Dashboard internal untuk memantau access point (AP) yang terdaftar: keterjangkauan (ping) dan
+metrik sistem (uptime, load, RAM) via SSH **read-only**. Daftar AP dikelola dari halaman
+**Perangkat** di dashboard (tabel `devices`), bukan dari berkas konfigurasi. Hasil disimpan di MariaDB,
 disajikan lewat Express REST + Socket.IO, dan ditampilkan di dashboard React.
 
 Spesifikasi sumber ada di `docs/konsep-mvp.md`. Dokumen itu tidak boleh diubah.
@@ -28,7 +29,7 @@ apps/web         # dashboard React (Vite)
 packages/shared  # parser murni, konstanta, transisi, kontrak
 packages/db      # pool MariaDB + helper health
 db/migrations    # skema
-db/seed          # inventaris 3 AP + baris heartbeat
+db/seed          # seed 3 AP awal (INSERT IGNORE) + baris heartbeat
 fixtures/        # keluaran manual AP (hanya untuk uji parser)
 ```
 
@@ -52,22 +53,26 @@ fixtures/        # keluaran manual AP (hanya untuk uji parser)
    npm run migrate   # skema (db/migrations) + seed 3 AP (db/seed), idempoten
    ```
 
-   Buat akun aplikasi berhak minimum (mis. `ama_app`) dan beri akses ke `ama_monitoring`.
-   Halaman CRUD perangkat sengaja tidak ada — inventaris dikelola via SQL seed.
+   Buat akun aplikasi berhak minimum (mis. `ama_app`; butuh `SELECT, INSERT, UPDATE, DELETE`)
+   dan beri akses ke `ama_monitoring`. Seed hanya mengisi 3 AP awal; selanjutnya inventaris
+   dikelola dari halaman **Perangkat** di dashboard.
 
 3. **Konfigurasi**
 
    ```bash
    cp .env.example .env
-   cp config/devices.example.json config/devices.json
    ```
 
-   Isi `.env` (rahasia DB, `AMA_AUTH_USER`/`AMA_AUTH_PASSWORD`, `AMA_JWT_SECRET`) dan
-   `config/devices.json`. Rahasia SSH **tidak** masuk `config/devices.json`; pakai
-   `AMA_DEVICE_<ID>_PASSWORD` atau `AMA_SECRETS_FILE`.
+   Isi `.env`: kredensial DB, `AMA_AUTH_USER`/`AMA_AUTH_PASSWORD`, `AMA_JWT_SECRET`, dan
+   `AMA_SECRETS_FILE` (berkas rahasia SSH di luar repo, mode 600).
 
-   `username`, `port`, dan `hostKeyFingerprint` diisi **per AP** — bisa berbeda satu sama lain
-   (mis. AP lain memakai akun sendiri, bukan `admin`).
+   Rahasia SSH **tidak** masuk DB/Git/argv/log. Halaman **Perangkat** menulisnya ke
+   `AMA_SECRETS_FILE` dengan kunci `devices.id`; `AMA_DEVICE_<ID>_PASSWORD` tetap didukung
+   sebagai alternatif untuk uji sementara.
+
+   `username`, `port`, dan fingerprint host key diatur **per AP** pada form perangkat.
+   Fingerprint diambil lewat tombol **Uji & ambil fingerprint** dan baru dipakai setelah
+   disimpan; fingerprint kosong → koleksi ditolak `host_key_unpinned`.
 
 ## Menjalankan
 
@@ -98,8 +103,8 @@ Panduan lengkap di `docs/devops.md` (§0 jalur cepat). Ringkasnya:
 npm ci && node node_modules/esbuild/install.js
 npm run build -w @ama/web
 cp .env.example .env                          # isi rahasia
-cp config/devices.example.json config/devices.json
 sudo scripts/provision-host.sh                # DB + nginx + systemd + migrasi/seed (idempoten)
+sudo systemctl restart ama-server ama-collector   # unit memuat .env saat start
 curl -s localhost:3001/api/health
 ```
 
@@ -109,6 +114,8 @@ bisa membaca `~` pemilik repo yang bermode 700) — jalankan ulang setelah setia
 ## Catatan operasional
 
 - Interval: ping 15s, sistem 60s. Kesegaran: ping >45s dan metrik >180s dianggap `stale`.
+- Daftar AP disegarkan collector tiap 15 s dari tabel `devices`: tambah, nonaktifkan, dan
+  hapus dari dashboard berlaku tanpa restart collector.
 - Transisi status: `down` setelah 3 gagal beruntun, pulih setelah 2 sukses beruntun.
 - Histori dibatasi maksimum 24 jam per permintaan (default 1 jam).
 - Tanpa Docker/Redis/Kubernetes — satu proses per app, cocok untuk skala 3 AP.

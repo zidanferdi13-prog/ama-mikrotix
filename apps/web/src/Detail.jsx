@@ -1,25 +1,22 @@
 import React, { useEffect, useState } from 'react';
 import { api } from './api.js';
 import Chart from './Chart.jsx';
-import { StatusBadge } from './Summary.jsx';
-import {
-  REACHABLE_LABEL,
-  FRESHNESS_LABEL,
-  reachabilityOf,
-  collectionLabel,
-  formatTime,
-  num,
-} from './format.js';
+import { CollectionBadge, FreshnessBadge, ReachabilityBadge } from './Badge.jsx';
+import { formatTime, formatUptime, num } from './format.js';
 
 const RANGES = [
-  { label: '1 jam', ms: 60 * 60 * 1000 },
-  { label: '24 jam', ms: 24 * 60 * 60 * 1000 },
+  { key: '1h', label: '1 jam', ms: 3_600_000 },
+  { key: '6h', label: '6 jam', ms: 6 * 3_600_000 },
+  { key: '24h', label: '24 jam', ms: 24 * 3_600_000 },
 ];
 
+// Ambang kesegaran ping di sisi klien (selaras dengan STALE_MS.ping di packages/shared).
+const PING_STALE_MS = 45_000;
+
 export default function Detail({ id, onBack }) {
-  const [data, setData] = useState(null);
+  const [device, setDevice] = useState(null);
   const [series, setSeries] = useState([]);
-  const [rangeMs, setRangeMs] = useState(RANGES[0].ms);
+  const [range, setRange] = useState(RANGES[0]);
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(true);
 
@@ -27,144 +24,252 @@ export default function Detail({ id, onBack }) {
     let cancelled = false;
     setLoading(true);
     const to = new Date();
-    const from = new Date(to.getTime() - rangeMs);
-    Promise.all([
-      api.device(id),
-      api.metrics(id, { from: from.toISOString(), to: to.toISOString() }),
-    ])
-      .then(([device, metrics]) => {
+    const from = new Date(to.getTime() - range.ms);
+    Promise.all([api.device(id), api.metrics(id, { from: from.toISOString(), to: to.toISOString() })])
+      .then(([deviceRes, metricsRes]) => {
         if (cancelled) return;
-        setData(device);
-        setSeries(metrics.metrics);
+        setDevice(deviceRes);
+        setSeries(metricsRes.metrics ?? []);
         setError(null);
       })
       .catch((err) => {
-        if (!cancelled) setError(err.status === 404 ? 'Perangkat tidak ditemukan.' : 'Gagal memuat detail.');
+        if (cancelled || err.status === 401) return;
+        setError(err.status === 404 ? 'Perangkat tidak ditemukan.' : 'Gagal memuat detail perangkat.');
       })
-      .finally(() => !cancelled && setLoading(false));
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
     return () => {
       cancelled = true;
     };
-  }, [id, rangeMs]);
+  }, [id, range]);
 
-  if (loading) return <p className="center">Memuat detail…</p>;
-  if (error) return <div className="banner error">{error}</div>;
-  if (!data) return null;
+  const backButton = (
+    <button type="button" className="btn btn-secondary" onClick={onBack}>
+      ← Kembali
+    </button>
+  );
 
-  const latestSystem = series.filter((m) => m.kind === 'system').at(-1);
-  const latestPing = series.filter((m) => m.kind === 'ping').at(-1);
-  const reach = reachabilityOf(data);
+  if (loading) {
+    return (
+      <div className="page">
+        <div className="page-head">{backButton}</div>
+        <p className="center">Memuat detail…</p>
+      </div>
+    );
+  }
 
-  // x = epoch ms; y null saat metrik tidak valid → jadi gap.
-  const mk = (field) =>
-    series
-      .filter((m) => m.kind === 'system')
-      .map((m) => ({ x: new Date(m.observed_at).getTime(), y: m[field] === null ? null : Number(m[field]) }));
-  const latency = series
-    .filter((m) => m.kind === 'ping')
-    .map((m) => ({ x: new Date(m.observed_at).getTime(), y: m.latency_ms === null ? null : Number(m.latency_ms) }));
+  if (error) {
+    return (
+      <div className="page">
+        <div className="page-head">{backButton}</div>
+        <div className="banner banner-error" role="alert">
+          {error}
+        </div>
+      </div>
+    );
+  }
+
+  if (!device) return null;
+
+  const systemRows = series.filter((row) => row.kind === 'system');
+  const pingRows = series.filter((row) => row.kind === 'ping');
+  const latestSystem = systemRows.at(-1);
+  const latestPing = pingRows.at(-1);
+
+  const systemPoints = (field) =>
+    systemRows.map((row) => ({ x: new Date(row.observed_at).getTime(), y: row[field] ?? null }));
+  const latencyPoints = pingRows.map((row) => ({
+    x: new Date(row.observed_at).getTime(),
+    y: row.latency_ms ?? null,
+  }));
+
+  const pingFresh = latestPing ? pingFreshness(latestPing.observed_at) : (device.last_ping?.freshness ?? 'no_data');
+  const systemAttempt = latestSystem?.observed_at ?? null;
+  const observasi = (field, fallback) => validAt(systemRows, field) ?? fallback ?? null;
+
+  const collectionErrors = Object.entries(latestSystem?.metric_status ?? {}).filter(
+    ([, value]) => value?.status && value.status !== 'ok',
+  );
 
   return (
-    <main className="content">
-      <button type="button" onClick={onBack} className="back">
-        ← Kembali
-      </button>
+    <div className="page">
+      <div className="page-head">
+        {backButton}
+        <div className="toolbar" role="group" aria-label="Rentang waktu grafik">
+          {RANGES.map((option) => (
+            <button
+              key={option.key}
+              type="button"
+              className={`btn btn-sm${option.key === range.key ? ' btn-primary' : ''}`}
+              aria-pressed={option.key === range.key}
+              onClick={() => setRange(option)}
+            >
+              {option.label}
+            </button>
+          ))}
+        </div>
+      </div>
 
       <section className="card">
-        <h2>{data.name}</h2>
+        <div className="ap-card-head">
+          <h2>{device.name}</h2>
+          <span className="row-actions">
+            <ReachabilityBadge device={device} />
+            <CollectionBadge device={device} />
+          </span>
+        </div>
         <dl className="identity">
           <div>
-            <dt>IP</dt>
-            <dd>{data.ip}</dd>
+            <dt>IP / port</dt>
+            <dd className="mono">
+              {device.ip ?? '—'}
+              {device.port ? `:${device.port}` : ''}
+            </dd>
+          </div>
+          <div>
+            <dt>Pengguna SSH</dt>
+            <dd>{device.username || '—'}</dd>
           </div>
           <div>
             <dt>Vendor / model</dt>
-            <dd>{data.vendor || '—'} {data.model ? `/ ${data.model}` : ''}</dd>
+            <dd>
+              {device.vendor || '—'}
+              {device.model ? ` / ${device.model}` : ''}
+            </dd>
           </div>
           <div>
             <dt>Firmware</dt>
-            <dd>{data.firmware || '—'}</dd>
+            <dd>{device.firmware || '—'}</dd>
+          </div>
+          <div>
+            <dt>Fingerprint</dt>
+            <dd className="mono">{device.host_key_fingerprint || '—'}</dd>
           </div>
           <div>
             <dt>Identitas terverifikasi</dt>
-            <dd>{data.identity_verified ? 'Ya' : 'Belum'}</dd>
+            <dd>{device.identity_verified ? 'Ya' : 'Belum'}</dd>
+          </div>
+          <div>
+            <dt>Status aktif</dt>
+            <dd>
+              {device.enabled === undefined || device.enabled === null ? '—' : device.enabled ? 'Aktif' : 'Nonaktif'}
+            </dd>
+          </div>
+          <div>
+            <dt>Catatan</dt>
+            <dd>{device.notes || '—'}</dd>
           </div>
         </dl>
       </section>
 
-      <section className="cards">
-        <Card label="Keterjangkauan" value={<StatusBadge tone={reach} label={REACHABLE_LABEL[reach]} />} />
-        <Card label="Koleksi sistem" value={collectionLabel(data)} />
-        <Card label="Latency" value={latestPing?.latency_ms != null ? `${num(latestPing.latency_ms, 1)} ms` : '—'} />
-        <Card
+      <section className="metric-grid" aria-label="Metrik terakhir">
+        <MetricCard
+          label="Latency"
+          value={
+            latestPing?.latency_ms === null || latestPing?.latency_ms === undefined
+              ? '—'
+              : `${num(latestPing.latency_ms, 1)} ms`
+          }
+          freshness={pingFresh}
+          hint={latestPing ? formatTime(latestPing.observed_at) : 'Belum ada sampel ping'}
+        />
+        <MetricCard
           label="Uptime"
-          value={latestSystem?.uptime_seconds != null ? formatUptime(latestSystem.uptime_seconds) : '—'}
+          value={formatUptime(latestSystem?.uptime_seconds)}
+          freshness={device.freshness?.uptime}
         />
-        <Card
+        <MetricCard
           label="RAM terpakai"
-          value={latestSystem?.memory_used_percent != null ? `${num(latestSystem.memory_used_percent, 1)}%` : '—'}
+          value={latestSystem?.memory_used_percent == null ? '—' : `${num(latestSystem.memory_used_percent, 1)} %`}
+          freshness={device.freshness?.ram}
         />
-        <Card
+        <MetricCard
           label="Load 1/5/15"
           value={
-            latestSystem?.load_1 != null
-              ? `${num(latestSystem.load_1, 2)} / ${num(latestSystem.load_5, 2)} / ${num(latestSystem.load_15, 2)}`
-              : '—'
+            latestSystem?.load_1 == null
+              ? '—'
+              : `${num(latestSystem.load_1, 2)} / ${num(latestSystem.load_5, 2)} / ${num(latestSystem.load_15, 2)}`
           }
+          freshness={device.freshness?.load}
         />
       </section>
 
-      <section className="card">
-        <h3>Waktu</h3>
-        <table className="table small">
-          <thead>
-            <tr>
-              <th scope="col">Metrik</th>
-              <th scope="col">Percobaan terakhir</th>
-              <th scope="col">Observasi valid terakhir</th>
-              <th scope="col">Kesegaran</th>
-            </tr>
-          </thead>
-          <tbody>
-            <Row label="Ping" attempt={data.last_ping_attempt_at} valid={latestPing?.observed_at} fresh={pingFreshness(latestPing)} />
-            <Row label="Uptime" valid={data.last_valid_at?.uptime} fresh={data.freshness?.uptime} />
-            <Row label="Load" valid={data.last_valid_at?.load} fresh={data.freshness?.load} />
-            <Row label="RAM" valid={data.last_valid_at?.ram} fresh={data.freshness?.ram} />
-          </tbody>
-        </table>
-      </section>
-
-      <section className="toolbar">
-        <label>
-          Rentang
-          <select value={rangeMs} onChange={(e) => setRangeMs(Number(e.target.value))}>
-            {RANGES.map((r) => (
-              <option key={r.ms} value={r.ms}>
-                {r.label}
-              </option>
-            ))}
-          </select>
-        </label>
+      <section className="card stack">
+        <h3>Grafik {range.label} terakhir</h3>
+        <Chart values={latencyPoints} label="Latency" unit="ms" height={200} />
+        <Chart values={systemPoints('memory_used_percent')} label="RAM terpakai" unit="%" height={200} />
+        <Chart values={systemPoints('load_1')} label="Load average 1 menit" height={200} digits={2} />
       </section>
 
       <section className="card">
-        <Chart series={latency} label="Latency" unit="ms" />
-        <Chart series={mk('memory_used_percent')} label="RAM terpakai" unit="%" />
-        <Chart series={mk('load_1')} label="Load average 1 menit" unit="tanpa persen" />
+        <h3>Kesegaran per metrik</h3>
+        <div className="table-wrap">
+          <table className="table small">
+            <caption className="sr-only">
+              Percobaan terakhir, observasi valid terakhir, dan kesegaran tiap metrik
+            </caption>
+            <thead>
+              <tr>
+                <th scope="col">Metrik</th>
+                <th scope="col">Percobaan terakhir</th>
+                <th scope="col">Observasi valid terakhir</th>
+                <th scope="col">Kesegaran</th>
+              </tr>
+            </thead>
+            <tbody>
+              <FreshnessRow
+                label="Ping"
+                attempt={device.last_ping_attempt_at ?? latestPing?.observed_at}
+                valid={latestPing?.observed_at}
+                fresh={pingFresh}
+              />
+              <FreshnessRow
+                label="Uptime"
+                attempt={systemAttempt}
+                valid={observasi('uptime_seconds', device.last_valid_at?.uptime)}
+                fresh={device.freshness?.uptime}
+              />
+              <FreshnessRow
+                label="Load"
+                attempt={systemAttempt}
+                valid={observasi('load_1', device.last_valid_at?.load)}
+                fresh={device.freshness?.load}
+              />
+              <FreshnessRow
+                label="RAM"
+                attempt={systemAttempt}
+                valid={observasi('memory_used_percent', device.last_valid_at?.ram)}
+                fresh={device.freshness?.ram}
+              />
+              <FreshnessRow
+                label="Sistem"
+                attempt={systemAttempt}
+                valid={device.last_valid_at?.system}
+                fresh={device.freshness?.system}
+              />
+            </tbody>
+          </table>
+        </div>
       </section>
 
       <section className="card">
         <h3>Error koleksi terakhir</h3>
-        {latestSystem?.collection_status && latestSystem.collection_status !== 'ok' ? (
-          <ul className="errors">
-            {Object.entries(latestSystem.metric_status ?? {})
-              .filter(([, v]) => v?.status && v.status !== 'ok')
-              .map(([k, v]) => (
-                <li key={k}>
-                  {k}: {v.status} ({v.code ?? '-'})
-                </li>
-              ))}
-          </ul>
+        {device.collection_status && device.collection_status !== 'ok' ? (
+          <div className="stack">
+            <p className="sub">Status koleksi: {device.collection_status}</p>
+            {collectionErrors.length === 0 ? (
+              <p>—</p>
+            ) : (
+              <ul className="errors">
+                {collectionErrors.map(([metric, value]) => (
+                  <li key={metric}>
+                    {metric}: {value.status} ({value.code ?? '-'})
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
         ) : (
           <p>—</p>
         )}
@@ -172,55 +277,59 @@ export default function Detail({ id, onBack }) {
 
       <section className="card">
         <h3>Event perangkat</h3>
-        {data.events.length === 0 ? (
+        {!device.events || device.events.length === 0 ? (
           <p>Belum ada event.</p>
         ) : (
           <ul className="events">
-            {data.events.map((e) => (
-              <li key={e.id}>
-                <span>{formatTime(e.started_at)}</span>
-                <span>{e.detail?.transition ?? e.type}</span>
-                <span>{e.status}</span>
+            {device.events.map((event) => (
+              <li key={event.id}>
+                <span className="event-head">
+                  <span className="event-name">{event.detail?.transition ?? event.type}</span>
+                  <span className="sub">{event.status}</span>
+                </span>
+                <p className="sub">{formatTime(event.started_at)}</p>
               </li>
             ))}
           </ul>
         )}
       </section>
-    </main>
-  );
-}
-
-function Card({ label, value }) {
-  return (
-    <div className="card stat">
-      <span className="stat-value">{value}</span>
-      <span className="stat-label">{label}</span>
     </div>
   );
 }
 
-function Row({ label, attempt, valid, fresh }) {
+function MetricCard({ label, value, freshness, hint }) {
+  return (
+    <div className="metric-card">
+      <span className="metric-label">{label}</span>
+      <span className="metric-value">{value}</span>
+      <FreshnessBadge freshness={freshness} />
+      {hint && <span className="sub">{hint}</span>}
+    </div>
+  );
+}
+
+function FreshnessRow({ label, attempt, valid, fresh }) {
   return (
     <tr>
       <th scope="row">{label}</th>
       <td>{attempt ? formatTime(attempt) : '—'}</td>
-      <td>{formatTime(valid)}</td>
-      <td>{FRESHNESS_LABEL[fresh] ?? '—'}</td>
+      <td>{valid ? formatTime(valid) : '—'}</td>
+      <td>{fresh ? <FreshnessBadge freshness={fresh} /> : '—'}</td>
     </tr>
   );
 }
 
-function formatUptime(seconds) {
-  const s = Number(seconds);
-  const d = Math.floor(s / 86400);
-  const h = Math.floor((s % 86400) / 3600);
-  const m = Math.floor((s % 3600) / 60);
-  return `${d}h ${h}j ${m}m`;
+// Observasi valid terakhir di rentang terpilih; null bila tidak ada sampel valid.
+function validAt(rows, field) {
+  for (let i = rows.length - 1; i >= 0; i -= 1) {
+    if (rows[i][field] !== null && rows[i][field] !== undefined) return rows[i].observed_at;
+  }
+  return null;
 }
 
-// Kesegaran ping dihitung dari sampel ping, bukan dari metrik sistem.
-function pingFreshness(latestPing) {
-  if (!latestPing?.observed_at) return 'no_data';
-  const age = Date.now() - new Date(latestPing.observed_at).getTime();
-  return age > 45_000 ? 'stale' : 'fresh';
+function pingFreshness(observedAt) {
+  if (!observedAt) return 'no_data';
+  const age = Date.now() - new Date(observedAt).getTime();
+  if (Number.isNaN(age)) return 'no_data';
+  return age > PING_STALE_MS ? 'stale' : 'fresh';
 }
