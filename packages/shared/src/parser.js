@@ -125,6 +125,24 @@ export function parseClientCount(text) {
   return { client_count: ok(total) };
 }
 
+// Identitas AP dari JSON mca-dump yang sama (tanpa perintah SSH tambahan). `info` tidak
+// tersedia lewat exec non-interaktif (ash: info: not found). Vendor hanya disimpulkan bila
+// JSON berbentuk UniFi (vap_table ada); model/firmware wajib string non-kosong, selain itu null.
+export function parseDeviceIdentity(text) {
+  let data;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(data?.vap_table)) return null;
+  const str = (v, max) => (typeof v === 'string' && v.trim() && v.trim().length <= max ? v.trim() : null);
+  const model = str(data.model_display, 120) ?? str(data.model, 120);
+  const firmware = str(data.version, 80);
+  if (!model || !firmware) return null;
+  return { vendor: 'Ubiquiti', model, firmware };
+}
+
 function statusesToCollectionStatus(statuses) {
   const values = Object.values(statuses);
   const anyOk = values.some((s) => s.status === METRIC_STATUS.ok);

@@ -9,6 +9,10 @@ Jumlah client Wi-Fi yang terhubung ikut dikoleksi (perintah tetap `mca-dump`, ha
 yang disimpan). Daftar client (MAC/hostname/IP) hanya dibaca **live** saat diminta dari halaman
 Detail dan tidak pernah masuk database.
 
+Vendor, model, dan firmware AP diisi otomatis oleh collector dari laporan AP sendiri
+(`mca-dump`) pada sesi SSH yang host key-nya terverifikasi; kolom `identity_verified` menandai
+baris yang sudah terisi begitu. Nama AP tetap pilihan operator dan tidak pernah ditimpa.
+
 Spesifikasi sumber ada di `docs/konsep-mvp.md`. Dokumen itu tidak boleh diubah.
 
 ## Prinsip yang dikunci

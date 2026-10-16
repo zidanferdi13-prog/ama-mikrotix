@@ -9,6 +9,7 @@ import {
   parseLoadavg,
   parseMeminfo,
   parseClientCount,
+  parseDeviceIdentity,
   normalizeSystemSample,
 } from '../src/parser.js';
 import { METRIC_STATUS, ERROR_CODE } from '../src/contracts.js';
@@ -183,4 +184,16 @@ test('normalizeSystemSample menyertakan client_count tanpa mengubah collection_s
   const rusak = normalizeSystemSample({ deviceId: 1, observedAt: OBSERVED_AT, outputs: { ...outputs, mcaDump: 'bukan json' } });
   assert.equal(rusak.client_count, null);
   assert.equal(rusak.metric_status.client_count.code, ERROR_CODE.not_numeric);
+});
+
+test('parseDeviceIdentity: model_display + version dari mca-dump UniFi, selain itu null', () => {
+  const dump = (extra) => JSON.stringify({ vap_table: [], ...extra });
+  assert.deepEqual(parseDeviceIdentity(dump({ model: 'U7LR', model_display: 'UAP-AC-LR', version: '6.8.2.15592' })), { vendor: 'Ubiquiti', model: 'UAP-AC-LR', firmware: '6.8.2.15592' });
+  assert.equal(parseDeviceIdentity(dump({ model: 'U7LR', version: '4.3.31.11368' })).model, 'U7LR');
+  // Data tidak lengkap/bukan UniFi/rusak → tidak ada identitas (tetap belum terverifikasi).
+  assert.equal(parseDeviceIdentity(dump({ model_display: 'UAP-AC-LR' })), null);
+  assert.equal(parseDeviceIdentity(dump({ model_display: ' ', version: '6.8.2' })), null);
+  assert.equal(parseDeviceIdentity(JSON.stringify({ model_display: 'X', version: '1' })), null);
+  assert.equal(parseDeviceIdentity('bukan json'), null);
+  assert.equal(parseDeviceIdentity(undefined), null);
 });

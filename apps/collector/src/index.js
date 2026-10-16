@@ -1,12 +1,12 @@
 // Entrypoint collector: jadwalkan ping + SSH sistem per AP aktif di tabel devices.
 // Daftar AP disegarkan berkala dari DB (DEVICE_REFRESH_MS) sehingga tambah,
 // nonaktifkan, atau hapus dari dashboard berlaku tanpa restart collector.
-import { COLLECT_INTERVAL_MS, DEVICE_REFRESH_MS, KINDS, clientSnapshot, normalizeSystemSample } from '@ama/shared';
+import { COLLECT_INTERVAL_MS, DEVICE_REFRESH_MS, KINDS, clientSnapshot, normalizeSystemSample, parseDeviceIdentity } from '@ama/shared';
 import { listCollectorDevices } from '@ama/db';
 import { createScheduler } from './scheduler.js';
 import { collectPing } from './ping.js';
 import { collectSystem } from './ssh.js';
-import { persistClients, persistPing, persistSystem, writeHeartbeat } from './persist.js';
+import { persistClients, persistIdentity, persistPing, persistSystem, writeHeartbeat } from './persist.js';
 import { describeSecretSource } from './secrets.js';
 import { startAlertJob } from './alerts-job.js';
 import { log } from './logger.js';
@@ -59,6 +59,11 @@ export async function startCollector({ pool, refreshMs = DEVICE_REFRESH_MS } = {
         // Snapshot client terpisah dari transaksi metrik (migrasi 005 mungkin belum ada).
         const snapshot = result.committed ? clientSnapshot(outputs.mcaDump) : { ok: false };
         if (snapshot.ok) await persistClients(pool, deviceId, observedAt, snapshot.clients);
+        // Identitas (vendor/model/firmware) dari mca-dump yang sama; tanpa data → tidak disentuh.
+        const identity = result.committed && !connectError ? parseDeviceIdentity(outputs.mcaDump) : null;
+        if (identity && (await persistIdentity(pool, deviceId, identity))) {
+          log.info({ event: 'identity_verified', deviceId, vendor: identity.vendor, model: identity.model, firmware: identity.firmware });
+        }
         log.info({
           event: 'collect',
           deviceId,

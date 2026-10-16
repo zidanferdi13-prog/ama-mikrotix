@@ -225,7 +225,12 @@ export default function DeviceForm({ device, autoProbe = false, onClose, onSaved
             </button>
           </span>
         </Field>
-        <Field id="vendor" label="Vendor" error={errorOf('vendor')}>
+        <Field
+          id="vendor"
+          label="Vendor"
+          error={errorOf('vendor')}
+          hint="Vendor/model/firmware diisi otomatis oleh collector dari AP (mca-dump)."
+        >
           <input id="vendor" value={form.vendor} onChange={set('vendor')} maxLength={80} {...aria('vendor')} />
         </Field>
         <Field id="model" label="Model" error={errorOf('model')}>

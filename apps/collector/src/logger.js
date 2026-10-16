@@ -14,6 +14,10 @@ const SAFE_KEYS = new Set([
   'code',
   'metric',
   'message',
+  // Identitas AP (dilaporkan perangkat sendiri) — bukan rahasia, perlu saat firmware naik.
+  'vendor',
+  'model',
+  'firmware',
 ]);
 
 function sanitize(fields) {

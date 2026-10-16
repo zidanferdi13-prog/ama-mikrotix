@@ -21,6 +21,11 @@ const SQL = {
       system_last_valid_at = COALESCE(?, system_last_valid_at),
       last_collection_status = ?
     WHERE id = ?`,
+  // Identitas AP dari perangkat itu sendiri (mca-dump) lewat sesi SSH yang host key-nya
+  // sudah dicocokkan dengan yang di-pin → layak ditandai terverifikasi. `<=>` = null-safe:
+  // baris tidak ditulis ulang bila nilainya sama (tiap siklus, 9 AP).
+  updateIdentity: `UPDATE devices SET vendor = ?, model = ?, firmware = ?, identity_verified = 1
+    WHERE id = ? AND NOT (identity_verified = 1 AND vendor <=> ? AND model <=> ? AND firmware <=> ?)`,
   insertEvent: `INSERT INTO monitoring_events
       (device_id, type, started_at, changed_at, finished_at, status, detail)
     VALUES (?,?,?,?,?,?,?)`,
@@ -185,6 +190,25 @@ export async function persistClients(pool, deviceId, observedAt, clients) {
     return true;
   } catch (err) {
     log.error({ event: 'persist_failed', deviceId, kind: 'clients', code: err.message });
+    return false;
+  }
+}
+
+// Identitas perangkat: menulis hanya saat berbeda. Mengembalikan true bila baris berubah.
+export async function persistIdentity(pool, deviceId, identity) {
+  try {
+    const result = await pool.query(SQL.updateIdentity, [
+      identity.vendor,
+      identity.model,
+      identity.firmware,
+      deviceId,
+      identity.vendor,
+      identity.model,
+      identity.firmware,
+    ]);
+    return Number(result.affectedRows ?? 0) > 0;
+  } catch (err) {
+    log.error({ event: 'persist_failed', deviceId, kind: 'identity', code: err.message });
     return false;
   }
 }

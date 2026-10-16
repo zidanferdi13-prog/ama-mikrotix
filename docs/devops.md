@@ -374,6 +374,24 @@ Diputuskan saat menambah alert proaktif & insiden (2026-10):
   (`sudo mysql --protocol=socket -uroot ama_monitoring < db/migrations/005_alerts.sql`), build
   dashboard disalin ke `/srv/ama-mikrotix/apps/web/dist`, lalu `ama-server` + `ama-collector`
   di-restart. Bukti: `event:alert_eval` pada log collector dan baris pada tabel `alerts`.
+- **Kalibrasi alert (2026-10-16)** — `incident.ap` sempat aktif di 7 AP sekaligus karena baris
+  `resolved` (dimuat collector hanya untuk *reopen*) ikut dihitung sebagai alert terbuka oleh rule
+  dan korelasi. Kini korelasi hanya melihat alert yang belum `resolved` dan tidak sedang ditutup
+  siklus itu (`correlationInputOf`). Selain itu:
+  - `client.disconnected` (churn: client pulang ≠ client rusak) **bukan** gejala insiden — tidak
+    mengangkat `incident.ap` maupun `correlation.client_issue`, hanya dihitung `disappeared`.
+  - `ap.client_count.*` keluar dari indikator `resources`: diturunkan dari daftar client yang
+    sama dengan indikator `clients`, jadi dulu skornya ganda.
+  - `clientTrafficStalled.snapshots` 3 → 5 (replay histori: episode counter-diam-sinyal-lemah
+    404 → 163); `clientCount.minBaseline` 4 → 6 (episode drop sehari 16 → 10). Ambang sinyal dan
+    `clientGoneSnapshots` tidak diubah — lonjakan sebelumnya sudah ditutup perbaikan `93fb333`/
+    `8c9e30b`.
+- **Identitas AP otomatis dari `mca-dump`** — collector membaca `model_display` (fallback
+  `model`) dan `version` dari output `mca-dump` yang sudah diambil tiap siklus sistem, lalu
+  menulis `vendor='Ubiquiti'`, `model`, `firmware`, `identity_verified=1` (hanya bila berubah;
+  log `identity_verified`). Sah karena datang dari sesi SSH dengan host key ter-pin. `info` tidak
+  dipakai: builtin shell, `ash: info: not found` lewat exec. `name` tidak pernah ditimpa (nama
+  pilihan operator). Vendor tanpa `mca-dump` tetap `identity_verified=0` dan diisi manual.
 
 Masih terbuka:
 
