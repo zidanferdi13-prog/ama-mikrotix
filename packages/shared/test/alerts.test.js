@@ -257,6 +257,22 @@ test('skenario 8b: baris korelasi B yang terbuka tidak mematikan deteksinya send
   );
 });
 
+test('skenario 8c: alert sinyal client yang sudah pergi ditutup; yang masih lemah tetap', () => {
+  const mac = 'aa:bb:cc:00:00:05';
+  const open = (ruleId) => [KEY(ruleId, DEVICE.id, mac), { id: 8, rule_id: ruleId, device_id: DEVICE.id, target: mac, dedup_key: KEY(ruleId, DEVICE.id, mac), first_seen_at: sec(600), last_seen_at: sec(0) }];
+  const alerts = new Map([open('client.signal.weak'), open('client.signal.critical')]);
+
+  const gone = evaluateClientRules({ atMs: T0, deviceId: DEVICE.id, points: [point(120, []), point(60, []), point(0, [])], alerts, apEvaluable: true });
+  for (const ruleId of ['client.signal.weak', 'client.signal.critical']) {
+    assert.equal(findingOf(gone, ruleId, mac)?.active, false, `${ruleId} harus ditutup`);
+  }
+
+  // Masih terlihat dengan sinyal sangat lemah → tetap aktif.
+  const weak = [600, 480, 360, 240, 120, 0].map((ago) => point(ago, [client(mac, -88)]));
+  const still = evaluateClientRules({ atMs: T0, deviceId: DEVICE.id, points: weak, alerts, apEvaluable: true });
+  assert.equal(isActive(still, 'client.signal.critical', mac), true);
+});
+
 // --- 9. Client hilang pada satu snapshot lalu kembali ---------------------------
 test('skenario 9: hilang satu snapshot bukan disconnect; dua snapshot baru disconnect', () => {
   const mac = 'aa:bb:cc:00:00:03';

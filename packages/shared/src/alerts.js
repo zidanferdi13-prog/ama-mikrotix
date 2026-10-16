@@ -411,6 +411,12 @@ export function evaluateClientRules({ atMs, deviceId, points = [], alerts = new 
 
     // Sinyal: hanya dari snapshot yang benar-benar memuat client ini.
     for (const ruleId of ['client.signal.weak', 'client.signal.critical']) {
+      // Client tak terlihat sepanjang jendela = sudah pergi: sinyalnya tak bisa dinilai
+      // lagi, jadi alert yang terbuka ditutup (sama dengan client.disconnected).
+      if (seen.length === 0) {
+        if (openOf(ruleId)) push(ruleId, false, null, { window_ms: ALERT.clientWindowMs, note: 'Client tidak terlihat sepanjang jendela evaluasi: dianggap sudah pergi, alert ditutup.' });
+        continue;
+      }
       const res = evaluateThreshold(ruleId, series.filter((s) => s.client && s.client.signal_dbm != null).map((s) => ({ observed_at: s.observed_at, signal_dbm: s.client.signal_dbm })), { atMs, open: openOf(ruleId), windowMs: ALERT.clientWindowMs });
       if (!res.evaluated) continue;
       push(ruleId, res.active, res.since, {
