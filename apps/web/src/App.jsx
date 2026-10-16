@@ -4,17 +4,18 @@ import Login from './Login.jsx';
 import Summary from './Summary.jsx';
 import Detail from './Detail.jsx';
 import Devices from './Devices.jsx';
+import AlertCenter from './AlertCenter.jsx';
 
 export default function App() {
   const [authState, setAuthState] = useState('checking'); // checking | anon | authed
-  const [view, setView] = useState({ name: 'summary' }); // summary | devices | detail
+  const [view, setView] = useState({ name: 'summary' }); // summary | devices | alerts | detail
   const [devices, setDevices] = useState([]);
   const [alerts, setAlerts] = useState([]);
   const [health, setHealth] = useState(null);
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(true);
   const [realtime, setRealtime] = useState('connecting');
-  const [refreshKey, setRefreshKey] = useState(0);
+  const [alertEvent, setAlertEvent] = useState(null);
 
   useEffect(() => {
     setUnauthorizedHandler(() => setAuthState('anon'));
@@ -55,7 +56,15 @@ export default function App() {
   useEffect(() => {
     if (authState !== 'authed') return undefined;
     load();
-    const stop = connectRealtime({ onRefresh: load, onStatus: setRealtime });
+    // Event alert menyegarkan daftar sekaligus menandai detail mana yang perlu di-refetch.
+    const stop = connectRealtime({
+      onRefresh: load,
+      onStatus: setRealtime,
+      onAlert: (payload) => {
+        setAlertEvent(payload);
+        load();
+      },
+    });
     return stop;
   }, [authState, load]);
 
@@ -93,7 +102,7 @@ export default function App() {
         ? { tone: 'unknown', text: 'Realtime: menyambung…' }
         : { tone: 'down', text: 'Realtime: terputus' };
 
-  const onSummary = view.name !== 'devices';
+  const onSummary = view.name !== 'devices' && view.name !== 'alerts';
 
   return (
     <div className="app">
@@ -120,6 +129,14 @@ export default function App() {
             onClick={() => setView({ name: 'devices' })}
           >
             Perangkat
+          </button>
+          <button
+            type="button"
+            className="nav-link"
+            aria-current={view.name === 'alerts' ? 'page' : undefined}
+            onClick={() => setView({ name: 'alerts' })}
+          >
+            Alert Center
           </button>
         </nav>
         <div className="topbar-right">
@@ -162,6 +179,13 @@ export default function App() {
 
       {view.name === 'devices' ? (
         <Devices devices={devices} loading={loading} onReload={load} />
+      ) : view.name === 'alerts' ? (
+        <AlertCenter
+          devices={devices}
+          refreshKey={refreshKey}
+          alertEvent={alertEvent}
+          onSelectDevice={(id) => setView({ name: 'detail', id })}
+        />
       ) : view.name === 'detail' ? (
         <Detail id={view.id} onBack={() => setView({ name: 'summary' })} />
       ) : (

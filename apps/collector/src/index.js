@@ -1,13 +1,14 @@
 // Entrypoint collector: jadwalkan ping + SSH sistem per AP aktif di tabel devices.
 // Daftar AP disegarkan berkala dari DB (DEVICE_REFRESH_MS) sehingga tambah,
 // nonaktifkan, atau hapus dari dashboard berlaku tanpa restart collector.
-import { COLLECT_INTERVAL_MS, DEVICE_REFRESH_MS, KINDS, normalizeSystemSample } from '@ama/shared';
+import { COLLECT_INTERVAL_MS, DEVICE_REFRESH_MS, KINDS, clientSnapshot, normalizeSystemSample } from '@ama/shared';
 import { listCollectorDevices } from '@ama/db';
 import { createScheduler } from './scheduler.js';
 import { collectPing } from './ping.js';
 import { collectSystem } from './ssh.js';
-import { persistPing, persistSystem, writeHeartbeat } from './persist.js';
+import { persistClients, persistPing, persistSystem, writeHeartbeat } from './persist.js';
 import { describeSecretSource } from './secrets.js';
+import { startAlertJob } from './alerts-job.js';
 import { log } from './logger.js';
 
 const HEARTBEAT_MS = 30_000;
@@ -51,7 +52,13 @@ export async function startCollector({ pool, refreshMs = DEVICE_REFRESH_MS } = {
         const started = Date.now();
         const { observedAt, outputs, connectError } = await collectSystem(deviceId, device);
         const sample = normalizeSystemSample({ deviceId, observedAt, outputs });
+        // Status SSH disimpan per sampel supaya alert bisa membedakan "AP mati" dari
+        // "SSH gagal" (§5.1). JSON, tanpa perubahan skema.
+        sample.metric_status.ssh = { status: connectError ? 'error' : 'ok', code: connectError };
         const result = await persistSystem(pool, sample);
+        // Snapshot client terpisah dari transaksi metrik (migrasi 005 mungkin belum ada).
+        const snapshot = result.committed ? clientSnapshot(outputs.mcaDump) : { ok: false };
+        if (snapshot.ok) await persistClients(pool, deviceId, observedAt, snapshot.clients);
         log.info({
           event: 'collect',
           deviceId,
@@ -116,16 +123,20 @@ export async function startCollector({ pool, refreshMs = DEVICE_REFRESH_MS } = {
 
   const refreshTimer = setInterval(refreshDevices, refreshMs);
   const heartbeat = setInterval(() => writeHeartbeat(pool), HEARTBEAT_MS);
+  // Evaluasi alert terpisah dari koleksi: kegagalannya tidak menghentikan pengumpulan.
+  const alertJob = startAlertJob(pool);
   if (typeof refreshTimer.unref === 'function') refreshTimer.unref();
   if (typeof heartbeat.unref === 'function') heartbeat.unref();
 
   return {
     scheduler,
     refreshDevices,
+    alertJob,
     stop() {
       scheduler.stop();
       clearInterval(refreshTimer);
       clearInterval(heartbeat);
+      alertJob.stop();
     },
   };
 }

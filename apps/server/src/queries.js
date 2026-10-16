@@ -377,3 +377,291 @@ export async function getHealth(pool) {
 
   return { ok: dbOk && collector.ok, db: { ok: dbOk, code: dbCode }, collector };
 }
+
+// --- Alert Center §7–§8 -------------------------------------------------------
+
+const SEVERITIES = ['critical', 'warning', 'info'];
+const ALERT_STATUSES = ['active', 'acknowledged', 'resolved'];
+const ALERT_FIELDS = `a.id, a.rule_id, a.severity, a.status, a.device_id, d.name AS device_name,
+       a.target, a.title, a.first_seen_at, a.last_seen_at, a.updated_at, a.resolved_at,
+       a.acknowledged_at, a.acknowledged_by, a.reopen_count, a.evidence, a.diagnosis`;
+
+function jsonOrNull(value) {
+  if (value === null || value === undefined) return null;
+  if (typeof value !== 'string') return value;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return null;
+  }
+}
+
+function alertRow(row, now = Date.now()) {
+  const first = isoOrNull(row.first_seen_at);
+  const end = isoOrNull(row.resolved_at) ?? new Date(now).toISOString();
+  return {
+    id: Number(row.id),
+    rule_id: row.rule_id,
+    severity: row.severity,
+    status: row.status,
+    device_id: row.device_id === null || row.device_id === undefined ? null : Number(row.device_id),
+    device_name: row.device_name ?? null,
+    target: row.target ?? null,
+    title: row.title,
+    first_seen_at: first,
+    last_seen_at: isoOrNull(row.last_seen_at),
+    updated_at: isoOrNull(row.updated_at),
+    resolved_at: isoOrNull(row.resolved_at),
+    acknowledged_at: isoOrNull(row.acknowledged_at),
+    acknowledged_by: row.acknowledged_by ?? null,
+    reopen_count: Number(row.reopen_count ?? 0),
+    duration_ms: first === null ? null : Math.max(0, Date.parse(end) - Date.parse(first)),
+    evidence: jsonOrNull(row.evidence),
+    diagnosis: jsonOrNull(row.diagnosis),
+  };
+}
+
+// Filter tervalidasi §9: nilai di luar daftar ditolak, bukan diabaikan diam-diam.
+export function parseAlertQuery(query = {}, now = Date.now()) {
+  const filters = { severity: null, status: null, device_id: null, from: null, to: null };
+  if (query.severity) {
+    if (!SEVERITIES.includes(query.severity)) return { error: 'invalid_severity' };
+    filters.severity = query.severity;
+  }
+  if (query.status) {
+    if (!ALERT_STATUSES.includes(query.status)) return { error: 'invalid_status' };
+    filters.status = query.status;
+  }
+  if (query.device_id !== undefined && query.device_id !== '') {
+    if (!/^\d+$/.test(String(query.device_id))) return { error: 'invalid_device_id' };
+    filters.device_id = Number(query.device_id);
+  }
+  if (query.from) {
+    const from = Date.parse(query.from);
+    if (Number.isNaN(from)) return { error: 'invalid_range' };
+    filters.from = new Date(from).toISOString();
+  }
+  if (query.to) {
+    const to = Date.parse(query.to);
+    if (Number.isNaN(to)) return { error: 'invalid_range' };
+    filters.to = new Date(to).toISOString();
+  }
+  if (filters.from && filters.to && Date.parse(filters.from) >= Date.parse(filters.to)) {
+    return { error: 'invalid_range' };
+  }
+  // Rentang efektif (termasuk batas default) dibatasi 24 jam seperti riwayat metrik.
+  const period = { from: filters.from ?? new Date(now - HISTORY.defaultRangeMs).toISOString(), to: filters.to ?? new Date(now).toISOString() };
+  if (Date.parse(period.to) - Date.parse(period.from) > HISTORY.maxRangeMs) return { error: 'range_too_large' };
+  const limit = query.limit === undefined || query.limit === '' ? 100 : Number(query.limit);
+  if (!Number.isInteger(limit) || limit < 1 || limit > 500) return { error: 'invalid_limit' };
+  const offset = query.offset === undefined || query.offset === '' ? 0 : Number(query.offset);
+  if (!Number.isInteger(offset) || offset < 0) return { error: 'invalid_offset' };
+  return { filters, limit, offset, period };
+}
+
+export async function listAlertCenter(pool, { filters, limit, offset }) {
+  const params = [];
+  let sql = `SELECT ${ALERT_FIELDS} FROM alerts a LEFT JOIN devices d ON d.id = a.device_id WHERE 1 = 1`;
+  if (filters.severity) {
+    sql += ' AND a.severity = ?';
+    params.push(filters.severity);
+  }
+  if (filters.status) {
+    sql += ' AND a.status = ?';
+    params.push(filters.status);
+  }
+  if (filters.device_id !== null) {
+    sql += ' AND a.device_id = ?';
+    params.push(filters.device_id);
+  }
+  if (filters.from) {
+    sql += ' AND a.last_seen_at >= ?';
+    params.push(sqlTime(filters.from));
+  }
+  if (filters.to) {
+    sql += ' AND a.last_seen_at <= ?';
+    params.push(sqlTime(filters.to));
+  }
+  // Terbuka dulu, lalu terberat: operator melihat yang butuh tindakan lebih dahulu.
+  sql += ` ORDER BY FIELD(a.status, 'active', 'acknowledged', 'resolved'),
+                    FIELD(a.severity, 'critical', 'warning', 'info'),
+                    a.last_seen_at DESC LIMIT ? OFFSET ?`;
+  params.push(limit, offset);
+  const rows = await pool.query(sql, params);
+  return rows.map((row) => alertRow(row));
+}
+
+// Ringkasan §7.A: angka nyata dari DB, bukan dummy.
+export async function alertSummary(pool, period, now = Date.now()) {
+  const [grouped, resolved, affected, incidents, heartbeat] = await Promise.all([
+    pool.query('SELECT severity, status, COUNT(*) AS n FROM alerts GROUP BY severity, status'),
+    pool.query('SELECT COUNT(*) AS n FROM alerts WHERE resolved_at BETWEEN ? AND ?', [sqlTime(period.from), sqlTime(period.to)]),
+    pool.query('SELECT COUNT(DISTINCT device_id) AS n FROM alerts WHERE status <> ? AND device_id IS NOT NULL', ['resolved']),
+    pool.query("SELECT COUNT(*) AS n FROM alerts WHERE status <> ? AND rule_id LIKE 'incident.%'", ['resolved']),
+    pool.query('SELECT last_heartbeat_at FROM collector_heartbeat WHERE id = 1'),
+  ]);
+
+  const by_severity = { critical: 0, warning: 0, info: 0 };
+  const by_status = { active: 0, acknowledged: 0, resolved: 0 };
+  let open = 0;
+  for (const row of grouped) {
+    by_status[row.status] = (by_status[row.status] ?? 0) + Number(row.n);
+    if (row.status !== 'resolved') {
+      by_severity[row.severity] = (by_severity[row.severity] ?? 0) + Number(row.n);
+      open += Number(row.n);
+    }
+  }
+
+  // Driver bisa mengembalikan Date, bukan string: normalisasi sebelum dihitung.
+  const lastHeartbeat = isoOrNull(heartbeat[0]?.last_heartbeat_at);
+  const collectorAgeMs = lastHeartbeat ? now - Date.parse(lastHeartbeat) : null;
+  return {
+    period,
+    open,
+    by_severity,
+    by_status,
+    incidents_open: Number(incidents[0]?.n ?? 0),
+    devices_affected: Number(affected[0]?.n ?? 0),
+    resolved_in_period: Number(resolved[0]?.n ?? 0),
+    collector: {
+      last_heartbeat_at: isoOrNull(lastHeartbeat),
+      age_ms: collectorAgeMs,
+      fresh: collectorAgeMs !== null && collectorAgeMs <= 90_000,
+    },
+  };
+}
+
+// Detail insiden §7.C: evidence, langkah, metrik sebelum/selama/sesudah, client, alert terkait.
+export async function getAlert(pool, id, now = Date.now()) {
+  const rows = await pool.query(
+    `SELECT ${ALERT_FIELDS} FROM alerts a LEFT JOIN devices d ON d.id = a.device_id WHERE a.id = ?`,
+    [id],
+  );
+  if (!rows[0]) return null;
+  const alert = alertRow(rows[0], now);
+
+  const events = await pool.query(
+    'SELECT at, from_status, to_status, actor, note FROM alert_events WHERE alert_id = ? ORDER BY at ASC, id ASC LIMIT 200',
+    [id],
+  );
+
+  const context = {
+    phases: {
+      before_from: new Date(Date.parse(alert.first_seen_at) - 10 * 60 * 1000).toISOString(),
+      during_from: alert.first_seen_at,
+      during_to: alert.resolved_at ?? new Date(now).toISOString(),
+      after_to: new Date(Date.parse(alert.resolved_at ?? new Date(now).toISOString()) + 10 * 60 * 1000).toISOString(),
+    },
+    metrics: [],
+    clients: [],
+    related_alerts: [],
+  };
+
+  if (alert.device_id !== null) {
+    const [metrics, clients] = await Promise.all([
+      pool.query(
+        `SELECT observed_at, kind, collection_status, reachable, latency_ms, memory_used_percent,
+                load_1, client_count
+         FROM device_metrics
+         WHERE device_id = ? AND observed_at BETWEEN ? AND ? AND kind IN ('ping','system')
+         ORDER BY observed_at ASC LIMIT 2000`,
+        [alert.device_id, sqlTime(context.phases.before_from), sqlTime(context.phases.after_to)],
+      ),
+      pool.query(
+        `SELECT mac, COUNT(*) AS snapshots, MAX(observed_at) AS last_seen_at,
+                MAX(signal_dbm) AS best_signal_dbm, MIN(signal_dbm) AS worst_signal_dbm
+         FROM client_observations
+         WHERE device_id = ? AND observed_at BETWEEN ? AND ?
+         GROUP BY mac ORDER BY mac ASC LIMIT 200`,
+        [alert.device_id, sqlTime(alert.first_seen_at), sqlTime(context.phases.during_to)],
+      ),
+    ]);
+    context.metrics = metrics;
+    context.clients = clients.map((row) => ({
+      mac: row.mac,
+      snapshots: Number(row.snapshots),
+      last_seen_at: isoOrNull(row.last_seen_at),
+      best_signal_dbm: row.best_signal_dbm === null ? null : Number(row.best_signal_dbm),
+      worst_signal_dbm: row.worst_signal_dbm === null ? null : Number(row.worst_signal_dbm),
+    }));
+  }
+
+  // Alert per-perangkat yang bergabung ke satu insiden (evidence.affected_devices).
+  if (alert.rule_id.startsWith('incident.')) {
+    const affectedDevices = (alert.diagnosis?.affected_devices ?? []).filter((value) => Number.isInteger(Number(value)));
+    if (affectedDevices.length > 0) {
+      const related = await pool.query(
+        `SELECT ${ALERT_FIELDS} FROM alerts a LEFT JOIN devices d ON d.id = a.device_id
+         WHERE a.id <> ? AND a.rule_id NOT LIKE 'incident.%'
+           AND a.first_seen_at BETWEEN ? AND ?
+           AND a.device_id IN (?)
+         ORDER BY a.last_seen_at DESC LIMIT 100`,
+        [id, sqlTime(new Date(Date.parse(alert.first_seen_at) - 5 * 60 * 1000).toISOString()), sqlTime(context.phases.during_to), affectedDevices],
+      );
+      context.related_alerts = related.map((row) => alertRow(row, now));
+    }
+  }
+
+  return {
+    alert,
+    events: events.map((row) => ({
+      at: isoOrNull(row.at),
+      from_status: row.from_status ?? null,
+      to_status: row.to_status,
+      actor: row.actor,
+      note: jsonOrNull(row.note),
+    })),
+    context,
+  };
+}
+
+// Acknowledge tidak pernah menyelesaikan insiden §7.D. Satu transaksi + FOR UPDATE
+// supaya dua operator yang menekan bersamaan tidak menulis dua riwayat.
+async function setAlertStatus(pool, { id, user, status, at }) {
+  const conn = await pool.getConnection();
+  try {
+    await conn.beginTransaction();
+    const rows = await conn.query('SELECT id, status FROM alerts WHERE id = ? FOR UPDATE', [id]);
+    if (!rows[0]) {
+      await conn.rollback();
+      return { error: 'not_found' };
+    }
+    const from = rows[0].status;
+    if (from === 'resolved') {
+      await conn.rollback();
+      return { error: 'already_resolved' };
+    }
+    if (from === status) {
+      await conn.commit();
+      return { unchanged: true, from, status, id };
+    }
+
+    if (status === 'acknowledged') {
+      await conn.query(
+        'UPDATE alerts SET status = ?, acknowledged_at = ?, acknowledged_by = ?, updated_at = ? WHERE id = ?',
+        [status, at, user, at, id],
+      );
+    } else {
+      await conn.query('UPDATE alerts SET status = ?, resolved_at = ?, updated_at = ? WHERE id = ?', [status, at, at, id]);
+    }
+    await conn.query(
+      'INSERT INTO alert_events (alert_id, at, from_status, to_status, actor, note) VALUES (?,?,?,?,?,?)',
+      [id, at, from, status, user, JSON.stringify({ via: 'api' })],
+    );
+    await conn.commit();
+    return { id, from, status, at: isoOrNull(at), user };
+  } catch (err) {
+    await conn.rollback().catch(() => {});
+    throw err;
+  } finally {
+    conn.release();
+  }
+}
+
+export function ackAlert(pool, { id, user, at = new Date() }) {
+  return setAlertStatus(pool, { id, user, status: 'acknowledged', at });
+}
+
+export function resolveAlert(pool, { id, user, at = new Date() }) {
+  return setAlertStatus(pool, { id, user, status: 'resolved', at });
+}

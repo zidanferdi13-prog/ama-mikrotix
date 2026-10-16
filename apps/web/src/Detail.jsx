@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { api } from './api.js';
 import Chart from './Chart.jsx';
 import { CollectionBadge, FreshnessBadge, ReachabilityBadge } from './Badge.jsx';
-import { formatTime, formatUptime, num } from './format.js';
+import { formatRelative, formatTime, formatUptime, num } from './format.js';
 
 const RANGES = [
   { key: '1h', label: '1 jam', ms: 3_600_000 },
@@ -280,6 +280,8 @@ export default function Detail({ id, onBack }) {
         )}
       </section>
 
+      <DeviceAlertsCard id={device.id} />
+
       <section className="card">
         <h3>Event perangkat</h3>
         {!device.events || device.events.length === 0 ? (
@@ -299,6 +301,73 @@ export default function Detail({ id, onBack }) {
         )}
       </section>
     </div>
+  );
+}
+
+// Alert aktif/riwayat untuk AP ini (§7): acknowledge di sini sama dengan di Alert Center.
+function DeviceAlertsCard({ id }) {
+  const [rows, setRows] = useState(null);
+  const [error, setError] = useState(null);
+  const [busy, setBusy] = useState(false);
+
+  const load = React.useCallback(() => {
+    api
+      .alertCenter({ device_id: id, limit: 50 })
+      .then((res) => setRows(res.alerts ?? []))
+      .catch((err) => {
+        if (err.status !== 401) setError(err.code ?? 'gagal_memuat');
+      });
+  }, [id]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  const ack = async (alertId) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await api.ackAlert(alertId);
+      load();
+    } catch (err) {
+      if (err.status !== 401) setError(err.code === 'already_resolved' ? 'Alert sudah selesai.' : 'Aksi gagal.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section className="card" aria-labelledby="device-alerts-title">
+      <div className="section-head">
+        <h3 id="device-alerts-title">Alert perangkat</h3>
+      </div>
+      {error && <div className="banner banner-error">Gagal: {error}</div>}
+      {rows === null && <p className="sub">Memuat…</p>}
+      {rows?.length === 0 && <p>Tidak ada alert untuk AP ini.</p>}
+      {rows?.length > 0 && (
+        <ul className="alert-list">
+          {rows.map((row) => (
+            <li key={row.id}>
+              <span className="event-head">
+                <span className="event-name">{row.title}</span>
+                <span className="sub">
+                  {row.severity} · {row.status} · {formatRelative(row.last_seen_at)}
+                </span>
+              </span>
+              <span className="sub mono">
+                {row.rule_id}
+                {row.target ? ` · ${row.target}` : ''}
+              </span>
+              {row.status === 'active' && (
+                <button type="button" className="btn btn-sm btn-secondary" disabled={busy} onClick={() => ack(row.id)}>
+                  Acknowledge
+                </button>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
   );
 }
 

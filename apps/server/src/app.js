@@ -5,7 +5,12 @@ import {
   listDevices,
   getDevice,
   getMetrics,
-  listAlerts,
+  listAlertCenter,
+  alertSummary,
+  getAlert,
+  ackAlert,
+  resolveAlert,
+  parseAlertQuery,
   getHealth,
   parseRange,
   parseSummaryRange,
@@ -289,6 +294,66 @@ export function createApp({ pool, allowedOrigin, probe = probeHostKey, clients =
     }
   });
 
+  // --- Alert Center §8: /summary dan /:id didaftarkan sebelum rute generik. ------
+  app.get('/api/alerts/summary', requireAuth, async (req, res, next) => {
+    try {
+      const parsed = parseAlertQuery(req.query);
+      if (parsed.error) return res.status(400).json({ error: parsed.error });
+      return res.json(await alertSummary(pool, parsed.period));
+    } catch (err) {
+      return next(err);
+    }
+  });
+
+  app.get('/api/alert-center', requireAuth, async (req, res, next) => {
+    try {
+      const parsed = parseAlertQuery(req.query);
+      if (parsed.error) return res.status(400).json({ error: parsed.error });
+      const alerts = await listAlertCenter(pool, parsed);
+      return res.json({ alerts, limit: parsed.limit, offset: parsed.offset });
+    } catch (err) {
+      return next(err);
+    }
+  });
+
+  app.get('/api/alerts/:id', requireAuth, async (req, res, next) => {
+    try {
+      if (!isInt(req.params.id)) return res.status(400).json({ error: 'invalid_id' });
+      const detail = await getAlert(pool, Number(req.params.id));
+      if (!detail) return res.status(404).json({ error: 'not_found' });
+      return res.json(detail);
+    } catch (err) {
+      return next(err);
+    }
+  });
+
+  // Acknowledge mencatat pengguna + waktu; tidak pernah menyelesaikan insiden.
+  app.post('/api/alerts/:id/ack', requireAuth, async (req, res, next) => {
+    try {
+      if (!isInt(req.params.id)) return res.status(400).json({ error: 'invalid_id' });
+      const result = await ackAlert(pool, { id: Number(req.params.id), user: req.user });
+      if (result.error === 'not_found') return res.status(404).json({ error: 'not_found' });
+      if (result.error === 'already_resolved') return res.status(409).json({ error: 'already_resolved' });
+      log.info({ event: 'alert_acknowledged', deviceId: result.id, user: req.user, status: result.status });
+      return res.json({ id: result.id, status: result.status, acknowledged_at: result.at, acknowledged_by: req.user, unchanged: Boolean(result.unchanged) });
+    } catch (err) {
+      return next(err);
+    }
+  });
+
+  // Resolve manual dicatat sebagai aksi operator; auto-resolve rule tetap berlaku.
+  app.post('/api/alerts/:id/resolve', requireAuth, async (req, res, next) => {
+    try {
+      if (!isInt(req.params.id)) return res.status(400).json({ error: 'invalid_id' });
+      const result = await resolveAlert(pool, { id: Number(req.params.id), user: req.user });
+      if (result.error === 'not_found') return res.status(404).json({ error: 'not_found' });
+      if (result.error === 'already_resolved') return res.status(409).json({ error: 'already_resolved' });
+      log.info({ event: 'alert_resolved', deviceId: result.id, user: req.user, status: result.status });
+      return res.json({ id: result.id, status: result.status, resolved_at: result.at, resolved_by: req.user, unchanged: Boolean(result.unchanged) });
+    } catch (err) {
+      return next(err);
+    }
+  });
   // Error handler: log aman, respons generik.
   app.use((err, req, res, _next) => {
     process.stderr.write(`${JSON.stringify({

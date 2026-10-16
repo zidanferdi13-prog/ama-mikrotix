@@ -67,13 +67,32 @@ export const api = {
     const qs = params.toString();
     return request(`/api/devices/${id}/metrics${qs ? `?${qs}` : ''}`);
   },
+
   clients: (id) => request(`/api/devices/${id}/clients`),
   alerts: (limit = 20) => request(`/api/alerts?limit=${limit}`),
   health: () => request('/api/health'),
+
+  // Alert Center §8. Filter kosong tidak dikirim: server menolak nilai di luar daftar.
+  alertCenter: (params) => request(`/api/alert-center${queryOf(params)}`),
+  alertSummary: (params) => request(`/api/alerts/summary${queryOf(params)}`),
+  alertDetail: (id) => request(`/api/alerts/${id}`),
+  ackAlert: (id) => request(`/api/alerts/${id}/ack`, { method: 'POST' }),
+  resolveAlert: (id) => request(`/api/alerts/${id}/resolve`, { method: 'POST' }),
 };
 
+function queryOf(params = {}) {
+  const qs = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value === null || value === undefined || value === '') continue;
+    qs.set(key, String(value));
+  }
+  const text = qs.toString();
+  return text ? `?${text}` : '';
+}
+
 // Reconnect → klien WAJIB refetch snapshot REST; server tidak memutar ulang event.
-export function connectRealtime({ onRefresh, onStatus }) {
+// onAlert dipakai Alert Center: event membawa id, jadi hanya detail itu yang disegarkan.
+export function connectRealtime({ onRefresh, onStatus, onAlert }) {
   const socket = io({ withCredentials: true, autoConnect: true });
   socket.on('connect', () => {
     onStatus('connected');
@@ -84,5 +103,9 @@ export function connectRealtime({ onRefresh, onStatus }) {
   socket.on('metrics.updated', () => onRefresh());
   socket.on('device.status.changed', () => onRefresh());
   socket.on('alert.created', () => onRefresh());
+  socket.on('alert.updated', (payload) => {
+    if (onAlert) onAlert(payload);
+    else onRefresh();
+  });
   return () => socket.close();
 }

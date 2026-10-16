@@ -1,7 +1,7 @@
 // SSH read-only §4.1/§9. Host key diverifikasi; rahasia tidak masuk log/argv.
 import { createHash } from 'node:crypto';
 import { Client } from 'ssh2';
-import { TIMEOUT_MS, SYSTEM_COMMANDS } from '@ama/shared';
+import { TIMEOUT_MS, SYSTEM_COMMANDS, sshCodeFor } from '@ama/shared';
 import { resolveSshAuth } from './secrets.js';
 
 // Verifikasi host key: bandingkan dengan fingerprint tepercaya dari tabel devices.
@@ -87,7 +87,7 @@ export async function collectSystem(deviceId, device) {
       else if (command.includes('mca-dump')) outputs.mcaDump = res.ok ? res.stdout : undefined;
     }
   } catch (err) {
-    connectError = hostKeyReason ?? 'connect_failed';
+    connectError = sshCodeFor(err, hostKeyReason);
   } finally {
     clearTimeout(sessionTimer);
     conn.end();

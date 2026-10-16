@@ -23,6 +23,12 @@ Spesifikasi sumber ada di `docs/konsep-mvp.md`. Dokumen itu tidak boleh diubah.
 - **Heartbeat collector** untuk `/api/health`. Collector mati → data menua, bukan "semua AP down".
 - **Verifikasi host key ON.** Rahasia hanya dari env/file di luar repo — tidak pernah ke Git/argv/log.
 - Parser **murni** di `@ama/shared` (tanpa I/O), bisa diuji tanpa SSH.
+- **Alert bukan kesimpulan tunggal.** Rule dievaluasi terpisah dari status AP; satu rule yang
+  tidak dapat dinilai berarti **hold** ("tidak ada data" ≠ "pulih"), bukan resolve.
+- **Kegagalan SSH tidak pernah berarti AP offline.** `ap.unreachable` hanya dari ping ICMP.
+- **Acknowledge ≠ selesai.** Acknowledge mencatat siapa dan kapan; penyelesaian tetap dari data
+  (auto-resolve) atau tindakan operator.
+- **Rahasia SSH tidak pernah dikirim ke frontend atau log** (alert hanya membawa kode, mis. `auth_failed`).
 
 ## Struktur
 
@@ -30,7 +36,7 @@ Spesifikasi sumber ada di `docs/konsep-mvp.md`. Dokumen itu tidak boleh diubah.
 apps/collector   # ping + SSH read-only, penjadwal, persist ke MariaDB
 apps/server      # REST API + Socket.IO + auth JWT (HttpOnly cookie)
 apps/web         # dashboard React (Vite)
-packages/shared  # parser murni, konstanta, transisi, kontrak
+packages/shared  # parser murni, konstanta, transisi, kontrak, rule alert + parser client
 packages/db      # pool MariaDB + helper health
 db/migrations    # skema
 db/seed          # seed 3 AP awal (INSERT IGNORE) + baris heartbeat
@@ -90,14 +96,44 @@ npm run web         # Vite dev server di :5173 (proxy /api & /socket.io ke :3001
 
 Buka `http://localhost:5173`, masuk dengan kredensial dari `.env`.
 
+## Alert dan insiden
+
+Evaluasi rule berjalan di proses collector (`apps/collector/src/alerts-job.js`) tiap **15 s**,
+transaksi sendiri setelah metrik di-commit. Halaman **Alert Center** di dashboard menampilkan
+ringkasan, filter (severity/status/perangkat/periode), detail bukti, dan aksi acknowledge/selesai.
+
+- Rules: ketersediaan AP (`ap.unreachable`, `ap.flapping`, `ap.ssh.*`, `ap.metrics.stale`,
+  `ap.collector_stalled`, `ap.unverified`, `ap.reboot`), performa (`ap.latency.high|critical`,
+  `ap.memory.high`, `ap.load.high`, `ap.client_count.drop|spike`), kesehatan client
+  (`client.signal.*`, `client.flapping`, `client.disconnected`, `client.traffic_stalled`),
+  dan korelasi (`incident.ap`, `incident.shared_network`, `incident.collector`,
+  `correlation.client_issue`). Semua ambang ada di `packages/shared/src/constants.js` (`ALERT`,
+  `ALERT_RULES`) — nilai awal untuk kalibrasi, bukan angka final.
+- Batas signifikansi yang dipakai: satu paket ICMP hilang bukan offline (butuh 3 sampel terakhir
+  gagal beruntun), satu snapshot client hilang bukan disconnect (butuh 2 snapshot sukses beruntun),
+  dan latency bercokol baru menjadi alert setelah 2–3 menit (masing-masing rule punya
+  `min_duration_ms`/`recover_duration_ms`).
+- Latency di sini adalah **RTT ICMP collector → AP**, bukan latency client ke gateway/internet.
+- Siklus hidup: `active` → `acknowledged` → `resolved`. Acknowledge dicatat pada `alert_events`
+  (aktor + waktu) dan **tidak** menutup alert; rule yang pulih menutupnya otomatis, termasuk yang
+  sudah diakui. Kondisi yang muncul lagi dalam 30 menit membuka ulang baris yang sama
+  (`reopen_count` naik), bukan membuat alert baru.
+- Korelasi A–D (`incident.*`, `correlation.client_issue`) merangkum beberapa rule dengan
+  `confidence` low/medium/high, bukti yang ada dan yang **tidak** ada, perangkat/klien terdampak,
+  serta langkah berikut. Korelasi yang tidak lagi terdeteksi ditutup otomatis pada siklus
+  berikutnya — tidak menggantung.
+- Saat collector bermasalah (`incident.collector` aktif), alert per-AP ditahan: bukan bukti AP
+  mati. Alert per-AP yang sudah terbuka juga tidak ditutup selama data tidak tersedia.
+
 ## Pengujian
 
 ```bash
 npm test
 ```
 
-Menjalankan `node --test` untuk `packages/shared/test`, `apps/collector/test`, dan `apps/server/test`.
-Parser, transisi status, penjadwal, dan API diuji tanpa koneksi jaringan/SSH nyata.
+Menjalankan `node --test` (penemuan otomatis berkas `*.test.js` di `packages/shared/test`,
+`apps/collector/test`, dan `apps/server/test`).
+Parser, transisi status, penjadwal, API, dan rule alert diuji tanpa koneksi jaringan/SSH nyata.
 
 ## Deploy
 
@@ -122,6 +158,9 @@ bisa membaca `~` pemilik repo yang bermode 700) — jalankan ulang setelah setia
   hapus dari dashboard berlaku tanpa restart collector.
 - Transisi status: `down` setelah 3 gagal beruntun, pulih setelah 2 sukses beruntun.
 - Histori dibatasi maksimum 24 jam per permintaan (default 1 jam).
+- Alert dievaluasi collector tiap 15 s. Migrasi `005_alerts.sql` menambah tabel `alerts`,
+  `alert_events`, `client_observations` — jalankan `npm run migrate` sebelum restart proses.
+- `client_observations` (hanya MAC + AP, tanpa hostname/IP) disimpan 24 jam lalu dihapus otomatis.
 - Tanpa Docker/Redis/Kubernetes — satu proses per app, cocok untuk skala 3 AP.
 - Data di `fixtures/` **hanya** untuk pengujian parser; jangan tampilkan sebagai data live.
 - Panduan deploy, reverse-proxy, backup, dan pemecahan masalah: `docs/devops.md`.

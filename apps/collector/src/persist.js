@@ -27,6 +27,10 @@ const SQL = {
   closeActiveEvent: `UPDATE monitoring_events
       SET status = 'selesai', finished_at = ?
     WHERE device_id = ? AND type = 'device.status.changed' AND status = 'aktif'`,
+  // Snapshot client per siklus sistem; identitas = (device_id, mac). Hostname/IP tidak disimpan.
+  clientColumns: `INSERT INTO client_observations
+      (device_id, mac, observed_at, signal_dbm, rssi, rx_bytes, tx_bytes, uptime_s, radio, vap) VALUES `,
+  pruneClients: 'DELETE FROM client_observations WHERE observed_at < ?',
   heartbeat: `INSERT INTO collector_heartbeat (id, last_heartbeat_at, last_error_code)
     VALUES (1, ?, ?) ON DUPLICATE KEY UPDATE last_heartbeat_at = VALUES(last_heartbeat_at), last_error_code = VALUES(last_error_code)`,
 };
@@ -157,6 +161,32 @@ export async function persistSystem(pool, sample) {
     return { committed: false, event: null };
   } finally {
     conn.release();
+  }
+}
+
+// Terpisah dari transaksi metrik: tabel/migrasi alert yang belum ada tidak boleh
+// menggagalkan metrik sistem. Hanya snapshot SUKSES yang ditulis; snapshot kosong-sukses
+// ditandai metric_status.client_count.status='ok' pada baris sistem yang sama.
+export async function persistClients(pool, deviceId, observedAt, clients) {
+  if (!clients.length) return true;
+  const at = dt(observedAt);
+  try {
+    await pool.query(
+      SQL.clientColumns + clients.map(() => '(?,?,?,?,?,?,?,?,?,?)').join(','),
+      clients.flatMap((c) => [deviceId, c.mac, at, c.signal_dbm, c.rssi, c.rx_bytes, c.tx_bytes, c.uptime_s, c.radio, c.vap]),
+    );
+    return true;
+  } catch (err) {
+    log.error({ event: 'persist_failed', deviceId, kind: 'clients', code: err.message });
+    return false;
+  }
+}
+
+export async function pruneClients(pool, beforeMs) {
+  try {
+    await pool.query(SQL.pruneClients, [dt(beforeMs)]);
+  } catch (err) {
+    log.error({ event: 'prune_failed', kind: 'clients', code: err.message });
   }
 }
 

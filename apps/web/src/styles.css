@@ -1379,6 +1379,70 @@ select[aria-invalid='true'] {
   }
 }
 
+/* --- Alert Center §7 --------------------------------------------------- */
+.link {
+  background: none;
+  border: 0;
+  padding: 0;
+  color: var(--accent);
+  font: inherit;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.link:hover {
+  text-decoration: none;
+}
+
+.table tbody tr.row-selected {
+  background: var(--surface-2, rgba(127, 127, 127, 0.08));
+}
+
+.alert-actions {
+  margin: var(--sp-3) 0;
+}
+
+.alert-block {
+  margin-top: var(--sp-4);
+}
+
+.alert-block-title {
+  margin: 0 0 var(--sp-2);
+  font-size: 0.95rem;
+}
+
+.alert-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+
+.alert-list > li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-2) 0;
+  border-top: 1px solid var(--line);
+}
+
+.alert-json {
+  margin: 0;
+  padding: var(--sp-3);
+  background: var(--surface-2, rgba(127, 127, 127, 0.06));
+  border-radius: var(--r-sm, 4px);
+  overflow-x: auto;
+  font-size: 0.8rem;
+  max-height: 20rem;
+}
+
+.alert-diagnosis {
+  margin-top: var(--sp-3);
+}
+
 @media (max-width: 640px) {
   .page {
     padding: var(--sp-4);

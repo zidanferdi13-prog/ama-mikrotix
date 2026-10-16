@@ -11,7 +11,7 @@
     "apps/*"
   ],
   "scripts": {
-    "test": "node --test packages/shared/test apps/collector/test apps/server/test",
+    "test": "node --test",
     "collector": "node --env-file-if-exists=.env apps/collector/src/main.js",
     "server": "node --env-file-if-exists=.env apps/server/src/index.js",
     "migrate": "node --env-file-if-exists=.env db/migrate.js",

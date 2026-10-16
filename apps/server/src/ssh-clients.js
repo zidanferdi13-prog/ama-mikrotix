@@ -3,10 +3,10 @@
 // Password hanya dipakai di memori proses; tidak pernah masuk log, error, atau respons.
 import { createHash } from 'node:crypto';
 import { Client as SshClient } from 'ssh2';
+import { mapClients, sshCodeFor as codeFor } from '@ama/shared';
 
 // Perintah tetap, tanpa string dari pengguna.
 const CLIENT_COMMAND = 'mca-dump';
-const MAX_CLIENTS = 200;
 const TIMEOUT_MS = 10_000;
 const READY_TIMEOUT_MS = 5_000;
 
@@ -14,64 +14,6 @@ const READY_TIMEOUT_MS = 5_000;
 function toFingerprint(hostHash) {
   const raw = Buffer.isBuffer(hostHash) ? hostHash : Buffer.from(String(hostHash), 'hex');
   return `sha256:${createHash('sha256').update(raw).digest('base64')}`;
-}
-
-function codeFor(err, hostKeyReason) {
-  // Penolakan host key adalah sebab yang paling spesifik.
-  if (hostKeyReason) return hostKeyReason;
-  if (err?.code === 'parse_failed') return 'parse_failed';
-  if (err?.code === 'timeout') return 'timeout';
-  if (err?.level === 'client-timeout') return 'timeout';
-  if (err?.level === 'client-authentication') return 'auth_failed';
-  return 'connect_failed';
-}
-
-function num(value) {
-  return typeof value === 'number' && Number.isFinite(value) ? value : null;
-}
-
-function text(value) {
-  return typeof value === 'string' && value !== '' ? value : null;
-}
-
-// sta_table tidak memuat ssid; label VAP (`vap_table[].name`) dipakai sebagai ssid.
-function toClient(sta, vap) {
-  return {
-    hostname: text(sta.hostname) ?? text(sta.name),
-    ip: text(sta.ip),
-    mac: text(sta.mac),
-    radio: text(vap.radio),
-    ssid: text(vap.name),
-    signal: num(sta.signal),
-    rssi: num(sta.rssi),
-    uptime_s: num(sta.uptime),
-    tx_bytes: num(sta.tx_bytes),
-    rx_bytes: num(sta.rx_bytes),
-    tx_rate: num(sta.tx_rate),
-    rx_rate: num(sta.rx_rate),
-    satisfaction: num(sta.satisfaction),
-  };
-}
-
-// Bentuk tak dikenal → parse_failed, bukan daftar kosong.
-function mapClients(stdout) {
-  let data;
-  try {
-    data = JSON.parse(stdout);
-  } catch {
-    return { ok: false };
-  }
-  const vaps = data?.vap_table;
-  if (!Array.isArray(vaps)) return { ok: false };
-
-  const all = [];
-  for (const vap of vaps) {
-    if (!Array.isArray(vap?.sta_table)) continue;
-    for (const sta of vap.sta_table) {
-      if (sta && typeof sta === 'object') all.push(toClient(sta, vap));
-    }
-  }
-  return { ok: true, clients: all.slice(0, MAX_CLIENTS), total: all.length, truncated: all.length > MAX_CLIENTS };
 }
 
 // Sambung, verifikasi host key, jalankan mca-dump, putuskan. Selalu tutup koneksi.

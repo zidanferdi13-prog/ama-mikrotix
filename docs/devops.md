@@ -85,6 +85,13 @@ npm run migrate   # db/migrations/*.sql lalu db/seed/*.sql, idempoten
 (`INSERT IGNORE`). Setelah itu inventaris dipegang tabel `devices` dan diubah dari halaman
 **Perangkat** di dashboard — bukan lagi lewat SQL atau berkas di repo.
 
+Migrasi `005_alerts.sql` (aditif, idempoten) menambah tabel `alerts`, `alert_events`, dan
+`client_observations`. Terapkan **sebelum** me-restart collector; bila belum diterapkan,
+collector tetap menulis metrik seperti biasa dan hanya mencatat `alert_eval_failed` pada log.
+Rollback: kembalikan kode ke revisi sebelumnya lalu `sudo systemctl restart ama-server
+ama-collector` — tabel baru diabaikan kode lama dan tidak perlu dihapus. Menghapus tabel itu
+**menghilangkan seluruh riwayat alert**, jadi lakukan hanya bila memang dikehendaki.
+
 ## 5. Konfigurasi dan rahasia
 
 ```bash
@@ -156,6 +163,11 @@ journalctl -u ama-collector -f
 Catatan penting: proses memaksa `TZ=UTC` (`apps/server/src/index.js`,
 `apps/collector/src/main.js`) karena driver MariaDB membaca kolom `DATETIME` sebagai waktu
 lokal — tanpa itu kesegaran data dan sumbu waktu grafik bergeser sebesar offset zona host.
+
+Collector juga menjalankan job alert (rule engine + korelasi, tiap 15 s, transaksi sendiri
+setelah metrik ter-commit). Perubahan ambang di `packages/shared/src/constants.js` berlaku
+setelah `sudo systemctl restart ama-collector`; perubahan tampilan Alert Center butuh build
+ulang dashboard (§6). Server hanya membaca tabel alert untuk API dan realtime.
 
 ## 8. Reverse-proxy (nginx)
 
@@ -239,6 +251,16 @@ Penting: collector mati berarti data **stale**. Jangan tampilkan itu sebagai "se
 - **HTTP 500 `internal_error`** — `journalctl -u ama-server` mencatat `event:api_error` dengan
   `method`, `path`, `code`, dan `message`; query gagal dan kolom BIGINT/DECIMAL yang tidak bisa
   diserialisasi tampil di sini.
+- **Alert Center kosong padahal ada gangguan** — cek `journalctl -u ama-collector | grep
+  alert_eval_failed`: kode itu berarti tabel alert belum ada/korup (jalankan `npm run migrate`).
+  Cek juga `ap.collector_stalled` pada halaman Alert Center: bila heartbeat collector tua,
+  alert per-AP sengaja ditahan dan hanya `incident.collector` yang muncul.
+- **`incident.collector` aktif bersama banyak alert per-AP** — urutannya: benahi collector dulu
+  (heartbeat, koneksi DB), alert per-AP akan dievaluasi ulang setelah data segar kembali. Alert
+  per-AP yang sudah terbuka **tidak** ditutup selama data tidak ada.
+- **Alert berkedip tiap 15 detik** — tidak seharusnya: alert aktif hanya ditulis ulang bila
+  `updated_at` sudah lebih tua dari `ALERT.touchIntervalMs` (60 s). Kalau berkedip, periksa
+  ambang `min_duration_ms`/`recover_duration_ms` di `packages/shared/src/constants.js`.
 
 ## 11. Backup
 
@@ -250,6 +272,9 @@ sudo mysqldump --single-transaction ama_monitoring | gzip > /var/backups/ama-$(d
 
 Simpan di luar host aplikasi, batasi akses file, dan uji restore secara berkala.
 Jangan campur backup dengan file `.env`/rahasia dalam satu arsip tanpa enkripsi.
+
+Dump itu sudah mencakup tabel alert (`alerts`, `alert_events`) dan snapshot client 24 jam
+terakhir (`client_observations`) karena semuanya di database yang sama — tidak ada langkah tambahan.
 
 ## 12. Keputusan deploy
 
@@ -282,11 +307,33 @@ Diputuskan saat menambah data client Wi-Fi (2026-10; untuk AP UniFi, penundaan �
   Vendor tanpa `mca-dump` → `client_count` berstatus `unsupported`, bukan nol.
 - **Jumlah client disimpan** — kolom `device_metrics.client_count` (migrasi `004`), grafik
   "Client terhubung" di Detail. Hanya angka, tanpa identitas.
-- **Daftar client hanya live** — `GET /api/devices/:id/clients` SSH ke AP saat tombol ditekan;
-  MAC/hostname/IP client **tidak disimpan** (data pribadi). Tidak ada tabel `wifi_clients`;
-  histori "siapa terhubung kapan" butuh kebijakan retensi/privasi tersendiri.
+- **Daftar client live** — `GET /api/devices/:id/clients` SSH ke AP saat tombol ditekan dan
+  **tidak disimpan** oleh endpoint itu. Sejak fitur alert, MAC client **memang** disimpan pada
+  `client_observations` (MAC + AP + sinyal/trafik, **tanpa** hostname/IP) dengan retensi otomatis
+  24 jam — lihat blok keputusan alert di bawah.
+
+Diputuskan saat menambah alert proaktif & insiden (2026-10):
+
+- **Tabel terpisah `alerts`/`alert_events`/`client_observations`** (migrasi `005`), bukan
+  memakai `monitoring_events` — alur status/transisi dan realtime yang sudah jalan tidak diubah.
+- **Satu baris terbuka per kondisi** — kolom `open_key` (generated, `NULL` bila `resolved`) +
+  `UNIQUE`; evaluasi bersamaan dilindungi `GET_LOCK` dan tetap aman karena constraint itu.
+- **Acknowledge tidak menutup alert** — hanya mencatat aktor/waktu di `alert_events`;
+  penyelesaian datang dari data (auto-resolve, termasuk untuk alert yang sudah diakui) atau
+  tombol selesai. Kondisi yang muncul lagi ≤30 menit membuka baris lama (`reopen_count`).
+- **Hold, bukan resolve** — rule yang tidak bisa dinilai (data terlalu tua, collector mati)
+  tidak menghasilkan temuan, sehingga alert terbuka tidak ditutup. "Tidak ada data" ≠ "pulih".
+- **Latency = RTT ICMP collector → AP** (bukan latency client ke internet); `load` masih
+  absolut karena jumlah CPU AP belum dikumpulkan.
+- **Korelasi ditutup otomatis** bila tidak lagi terdeteksi pada siklus berikutnya, supaya
+  insiden tidak menggantung, dan `confidence` mengikuti aturan kaku (indikator independen),
+  bukan probabilitas.
+- **MAC client disimpan maksimum 24 jam** (`client_observations`) hanya untuk mendeteksi
+  client hilang/melemah; hostname dan IP **tidak** disimpan, dan penghapusan berjalan tiap jam
+  di collector. Kebijakan privasi ini yang menggantikan "butuh kebijakan tersendiri" di atas.
 
 Masih terbuka:
 
-- **Retensi histori** — belum ada penghapusan otomatis; jangan aktifkan tanpa persetujuan.
+- **Retensi histori** — `client_observations` kini dihapus otomatis (24 jam). `device_metrics`,
+  `monitoring_events`, `alerts`, dan `alert_events` **belum** punya penghapusan otomatis.
 - **Jadwal backup & uji restore** — baru contoh manual (§11), belum dijadwalkan.
