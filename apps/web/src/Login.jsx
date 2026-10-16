@@ -25,7 +25,15 @@ export default function Login({ onSuccess }) {
   return (
     <div className="center">
       <form className="card login" onSubmit={submit}>
-        <h1>Monitoring AP</h1>
+        <div className="login-head">
+          <span className="brand-mark" aria-hidden="true">
+            AP
+          </span>
+          <div>
+            <h1>Monitoring AP</h1>
+            <p className="sub">Masuk untuk memantau access point.</p>
+          </div>
+        </div>
         <div className="field">
           <label htmlFor="username">Nama pengguna</label>
           <input

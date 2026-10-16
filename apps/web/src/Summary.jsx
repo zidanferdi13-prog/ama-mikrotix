@@ -84,6 +84,12 @@ export default function Summary({ devices, alerts, loading, refreshKey, onSelect
 
   return (
     <div className="page">
+      <div className="page-head">
+        <div>
+          <h2>Ringkasan</h2>
+          <p className="sub">Status seluruh AP terdaftar dan event terbaru.</p>
+        </div>
+      </div>
       <div className="layout-aside">
         <div className="stack">
           <section className="kpi-strip" aria-label="Ringkasan status">

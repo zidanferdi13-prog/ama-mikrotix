@@ -96,12 +96,12 @@ export default function Detail({ id, onBack }) {
     <div className="page">
       <div className="page-head">
         {backButton}
-        <div className="toolbar" role="group" aria-label="Rentang waktu grafik">
+        <div className="segmented" role="group" aria-label="Rentang waktu grafik">
           {RANGES.map((option) => (
             <button
               key={option.key}
               type="button"
-              className={`btn btn-sm${option.key === range.key ? ' btn-primary' : ''}`}
+              className="btn btn-sm"
               aria-pressed={option.key === range.key}
               onClick={() => setRange(option)}
             >
@@ -197,10 +197,12 @@ export default function Detail({ id, onBack }) {
 
       <section className="card stack">
         <h3>Grafik {range.label} terakhir</h3>
-        <Chart values={latencyPoints} label="Latency" unit="ms" height={200} />
-        <Chart values={systemPoints('memory_used_percent')} label="RAM terpakai" unit="%" height={200} />
-        <Chart values={systemPoints('client_count')} label="Client terhubung" unit="client" height={200} digits={0} />
-        <Chart values={systemPoints('load_1')} label="Load average 1 menit" height={200} digits={2} />
+        <div className="chart-list">
+          <Chart values={latencyPoints} label="Latency" unit="ms" height={200} />
+          <Chart values={systemPoints('memory_used_percent')} label="RAM terpakai" unit="%" height={200} />
+          <Chart values={systemPoints('client_count')} label="Client terhubung" unit="client" height={200} digits={0} />
+          <Chart values={systemPoints('load_1')} label="Load average 1 menit" height={200} digits={2} />
+        </div>
       </section>
 
       <ClientsCard key={id} id={id} />
@@ -340,15 +342,13 @@ function ClientsCard({ id }) {
 
   return (
     <section className="card stack" aria-labelledby="clients-title">
-      <div className="ap-card-head">
+      <div className="section-head">
         <h3 id="clients-title">Client terhubung (live)</h3>
         <button type="button" className="btn btn-sm" onClick={load} aria-busy={busy}>
           {data || error ? 'Muat ulang daftar client' : 'Muat daftar client'}
         </button>
       </div>
-      <p>
-        <strong>Data live dari AP, tidak disimpan di database.</strong>
-      </p>
+      <p className="sub">Data live dari AP, tidak disimpan di database.</p>
       <div role="status" aria-live="polite">
         {busy && <p>Memuat…</p>}
         {error && <div className="banner banner-error">Gagal: {error}</div>}
