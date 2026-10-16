@@ -103,6 +103,7 @@ export async function listDevices(pool, hasSecret = () => false) {
       secret_updated_at: isoOrNull(device.secret_updated_at),
       reachable: device.reachable,
       collection_status: device.last_collection_status,
+      last_collected_at: isoOrNull(row?.observed_at),
       last_ping: lastPing[0]
         ? {
             observed_at: lastPing[0].observed_at,

@@ -907,6 +907,12 @@ select[aria-invalid='true'] {
   margin-top: -0.5rem;
 }
 
+.ap-card > .ap-collected {
+  margin-top: -0.6rem;
+  font-size: 0.74rem;
+  color: var(--text-soft);
+}
+
 .ap-card-head {
   display: flex;
   align-items: center;

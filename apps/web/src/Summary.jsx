@@ -259,6 +259,9 @@ function ApCard({ device, series, onSelect }) {
         <ReachabilityBadge device={device} />
       </span>
       <span className="mono sub">{device.ip}</span>
+      <span className="sub ap-collected" title={formatTime(device.last_collected_at)}>
+        Koleksi terakhir: {device.last_collected_at ? `${formatTime(device.last_collected_at)} (${formatRelative(device.last_collected_at)})` : 'belum pernah'}
+      </span>
       <span className="ap-metrics">
         <Metric label="Latency">{latency === null || latency === undefined ? '—' : `${num(latency, 1)} ms`}</Metric>
         <Metric label="RAM">{ram === null || ram === undefined ? '—' : `${num(ram, 1)} %`}</Metric>
