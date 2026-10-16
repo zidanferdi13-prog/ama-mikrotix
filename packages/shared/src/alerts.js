@@ -532,6 +532,13 @@ export function isClientAlert(ruleId) {
   return CLIENT_RULES.includes(ruleId);
 }
 
+// Baris korelasi/insiden merangkum kondisi AP, bukan gejala AP itu sendiri. Tanpa ini
+// skenario B menahan deteksi ulang dirinya sendiri (baris B terbuka = "alert non-client"),
+// sehingga korelasi yang masih berlaku ditutup siklus berikutnya lalu dibuka lagi: berkedip.
+function isCorrelationAlert(ruleId) {
+  return ruleId.startsWith('incident.') || ruleId.startsWith('correlation.');
+}
+
 function byDevice(alerts) {
   const map = new Map();
   for (const a of alerts) {
@@ -645,7 +652,7 @@ export function correlateAlerts({ atMs, alerts = [], devices = [], collectorAgeM
     const clientList = list.filter((a) => isClientAlert(a.rule_id));
     if (!clientList.length) continue;
     // AP punya masalah sendiri → skenario A yang berlaku, bukan B.
-    if (list.some((a) => !isClientAlert(a.rule_id) && a.rule_id !== 'ap.reboot')) continue;
+    if (list.some((a) => !isClientAlert(a.rule_id) && !isCorrelationAlert(a.rule_id) && a.rule_id !== 'ap.reboot')) continue;
     const targets = [...new Set(clientList.map((a) => a.target).filter(Boolean))];
     const device = devices.find((d) => d.id === id) ?? { id };
     out.push(correlationAlert({

@@ -331,6 +331,13 @@ Diputuskan saat menambah alert proaktif & insiden (2026-10):
 - **MAC client disimpan maksimum 24 jam** (`client_observations`) hanya untuk mendeteksi
   client hilang/melemah; hostname dan IP **tidak** disimpan, dan penghapusan berjalan tiap jam
   di collector. Kebijakan privasi ini yang menggantikan "butuh kebijakan tersendiri" di atas.
+- **Baris korelasi tidak menahan deteksi ulang dirinya sendiri** — skenario B (client) hanya
+  menghitung alert non-client *non-korelasi* sebagai "AP punya masalah sendiri"; tanpa itu baris
+  `correlation.client_issue` yang terbuka membuat korelasi ditutup lalu dibuka lagi tiap siklus.
+- **Sudah diterapkan di host ini (2026-10-16)** — migrasi `005` dijalankan sebagai root via socket
+  (`sudo mysql --protocol=socket -uroot ama_monitoring < db/migrations/005_alerts.sql`), build
+  dashboard disalin ke `/srv/ama-mikrotix/apps/web/dist`, lalu `ama-server` + `ama-collector`
+  di-restart. Bukti: `event:alert_eval` pada log collector dan baris pada tabel `alerts`.
 
 Masih terbuka:
 

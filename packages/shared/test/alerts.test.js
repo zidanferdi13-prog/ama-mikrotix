@@ -236,6 +236,27 @@ test('skenario 8: satu client sinyal lemah → skenario B, client lain tidak ter
   assert.match(scenarioB.diagnosis.note, /AP dan client lain normal/iu);
 });
 
+test('skenario 8b: baris korelasi B yang terbuka tidak mematikan deteksinya sendiri', () => {
+  const mac = 'aa:bb:cc:00:00:04';
+  const clientAlert = { rule_id: 'client.signal.weak', device_id: DEVICE.id, target: mac, severity: 'warning' };
+  const devices = [{ id: DEVICE.id, stale: false, client_count: 2 }];
+  const first = correlateAlerts({ atMs: T0, alerts: [clientAlert], devices, collectorAgeMs: 1000 });
+  const row = first.find((c) => c.rule_id === 'correlation.client_issue');
+  assert.ok(row, 'siklus pertama harus mendeteksi skenario B');
+
+  // Siklus berikutnya: baris korelasi (dan insiden) ikut termuat sebagai alert terbuka.
+  const next = correlateAlerts({
+    atMs: T0 + 15_000,
+    alerts: [clientAlert, { rule_id: row.rule_id, device_id: DEVICE.id, target: null, severity: 'info' }, { rule_id: 'incident.ap', device_id: DEVICE.id, target: null, severity: 'warning' }],
+    devices,
+    collectorAgeMs: 1000,
+  });
+  assert.ok(
+    next.some((c) => c.rule_id === 'correlation.client_issue'),
+    'korelasi B harus tetap terdeteksi selama client masih bermasalah',
+  );
+});
+
 // --- 9. Client hilang pada satu snapshot lalu kembali ---------------------------
 test('skenario 9: hilang satu snapshot bukan disconnect; dua snapshot baru disconnect', () => {
   const mac = 'aa:bb:cc:00:00:03';
