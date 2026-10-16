@@ -2,7 +2,7 @@
 // Pekerjaan yang belum selesai melewati slot berikutnya (tidak menumpuk antrean).
 import { CONCURRENCY } from '@ama/shared';
 
-export function createScheduler({ jobs, concurrency = CONCURRENCY, tickMs = 1000, now = () => Date.now() }) {
+export function createScheduler({ jobs, concurrency = CONCURRENCY, tickMs = 1000, now = () => Date.now(), onError = null }) {
   const running = new Set(); // key `${deviceId}:${kind}`
   const inflight = { ping: 0, system: 0 };
   let nextDue = jobs.map((job) => now() + job.intervalMs);
@@ -31,7 +31,10 @@ export function createScheduler({ jobs, concurrency = CONCURRENCY, tickMs = 1000
       inflight[job.kind] += 1;
       Promise.resolve()
         .then(() => job.run())
-        .catch(() => {})
+        .catch((err) => {
+          // Kegagalan tak terduga tidak boleh hilang tanpa jejak.
+          if (onError) onError({ job, err });
+        })
         .finally(() => {
           running.delete(key);
           inflight[job.kind] -= 1;

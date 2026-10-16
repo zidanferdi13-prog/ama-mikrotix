@@ -1,3 +1,6 @@
+// Nilai di DB adalah UTC; proses dipaksa UTC agar pembacaan DATETIME tidak bergeser ke zona lokal.
+process.env.TZ = 'UTC';
+
 // Jalankan collector: node apps/collector/src/main.js
 import { createPool } from '@ama/db';
 import { startCollector } from './index.js';

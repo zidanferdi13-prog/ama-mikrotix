@@ -5,7 +5,7 @@ import { dirname, join } from 'node:path';
 import { createPool } from '@ama/db';
 
 const here = dirname(fileURLToPath(import.meta.url));
-const root = join(here, '..', '..');
+const root = join(here, '..');
 
 async function runDir(conn, dir) {
   const files = readdirSync(dir).filter((f) => f.endsWith('.sql')).sort();

@@ -31,6 +31,9 @@ const SQL = {
     VALUES (1, ?, ?) ON DUPLICATE KEY UPDATE last_heartbeat_at = VALUES(last_heartbeat_at), last_error_code = VALUES(last_error_code)`,
 };
 
+// MariaDB DATETIME(3) menolak bentuk ISO 'YYYY-MM-DDTHH:MM:SS.sssZ'.
+const dt = (iso) => new Date(iso).toISOString().replace('T', ' ').replace('Z', '');
+
 function metricGroupFlags(sample) {
   const s = sample.metric_status ?? {};
   const isOk = (k) => s[k]?.status === 'ok';
@@ -38,11 +41,11 @@ function metricGroupFlags(sample) {
   const loadOk = isOk('load_1');
   const ramOk = isOk('memory_used_percent');
   return {
-    uptimeLastValid: uptimeOk ? sample.observed_at : null,
-    loadLastValid: loadOk ? sample.observed_at : null,
-    ramLastValid: ramOk ? sample.observed_at : null,
+    uptimeLastValid: uptimeOk ? dt(sample.observed_at) : null,
+    loadLastValid: loadOk ? dt(sample.observed_at) : null,
+    ramLastValid: ramOk ? dt(sample.observed_at) : null,
     // Timestamp grup hanya naik bila ada metrik valid pada siklus ini.
-    systemLastValid: uptimeOk || loadOk || ramOk ? sample.observed_at : null,
+    systemLastValid: uptimeOk || loadOk || ramOk ? dt(sample.observed_at) : null,
   };
 }
 
@@ -65,8 +68,8 @@ export async function persistPing(pool, sample) {
     await conn.query(SQL.insertMetric, [
       sample.device_id,
       'ping',
-      sample.observed_at,
-      sample.received_at ?? sample.observed_at,
+      dt(sample.observed_at),
+      dt(sample.received_at ?? sample.observed_at),
       sample.collection_status,
       sample.reachable === null ? null : sample.reachable ? 1 : 0,
       sample.latency_ms,
@@ -78,20 +81,20 @@ export async function persistPing(pool, sample) {
       state.reachable,
       state.failCount,
       state.okCount,
-      sample.observed_at,
+      dt(sample.observed_at),
       sample.device_id,
     ]);
 
     let emitted = null;
     if (event) {
-      await conn.query(SQL.closeActiveEvent, [sample.observed_at, sample.device_id]);
+      await conn.query(SQL.closeActiveEvent, [dt(sample.observed_at), sample.device_id]);
       const type = event === 'down' ? 'device.down' : 'device.recovered';
       await conn.query(SQL.insertEvent, [
         sample.device_id,
         'device.status.changed',
-        sample.observed_at,
-        sample.observed_at,
-        event === 'down' ? null : sample.observed_at,
+        dt(sample.observed_at),
+        dt(sample.observed_at),
+        event === 'down' ? null : dt(sample.observed_at),
         event === 'down' ? 'aktif' : 'selesai',
         JSON.stringify({ transition: type, to: state.reachable }),
       ]);
@@ -121,8 +124,8 @@ export async function persistSystem(pool, sample) {
     await conn.query(SQL.insertMetric, [
       sample.device_id,
       'system',
-      sample.observed_at,
-      sample.received_at ?? sample.observed_at,
+      dt(sample.observed_at),
+      dt(sample.received_at ?? sample.observed_at),
       sample.collection_status,
       null, null,
       sample.uptime_seconds,
@@ -158,7 +161,7 @@ export async function persistSystem(pool, sample) {
 
 export async function writeHeartbeat(pool, errorCode = null) {
   try {
-    await pool.query(SQL.heartbeat, [new Date().toISOString(), errorCode]);
+    await pool.query(SQL.heartbeat, [dt(new Date()), errorCode]);
   } catch (err) {
     log.error({ event: 'heartbeat_failed', code: err.message });
   }

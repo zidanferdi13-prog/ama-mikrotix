@@ -1,7 +1,5 @@
 // Kontrak data §4.3. Field yang tidak berlaku pada suatu kind bukan error.
 
-export const KINDS = ['ping', 'system'];
-
 export const COLLECTION_STATUS = ['ok', 'partial', 'error'];
 
 export const METRIC_STATUS = {

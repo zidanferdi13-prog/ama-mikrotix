@@ -1,3 +1,6 @@
+// Driver membaca kolom DATETIME sebagai waktu lokal; proses harus UTC agar nilai UTC di DB dibaca benar.
+process.env.TZ = 'UTC';
+
 import { createServer } from 'node:http';
 import { Server } from 'socket.io';
 import { createPool } from '@ama/db';

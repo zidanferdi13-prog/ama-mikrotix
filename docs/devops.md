@@ -3,9 +3,29 @@
 Dokumen ini menjelaskan cara men-deploy dan mengoperasikan Project Monitoring AP.
 Sumber spesifikasi tetap `docs/konsep-mvp.md`; dokumen ini turunannya dan tidak mengubah keputusan di sana.
 
-> Status: **belum final**. Autostart/restart service, backup, dan retensi sengaja
-> ditunda (lihat bagian *Yang belum ditentukan*). OS/lokasi server target juga
-> belum dikonfirmasi, jadi contoh service di sini bersifat ilustrasi, bukan asumsi.
+> Status: autostart (`systemd`) dan OS/lokasi host sudah diputuskan — lihat §12.
+> Retensi histori dan jadwal backup masih terbuka. Contoh di dokumen ini mengikuti
+> host deploy saat ini (§0); sesuaikan bila pindah host.
+
+## 0. Jalur cepat (host ini)
+
+Host saat ini: Raspberry Pi, Debian 13 (arm64), LAN `192.168.0.103`; 3 AP di `192.168.5.0/24`
+dijangkau lewat router. Node 20 dipasang user-space di `~/.local/node-v20.19.5-linux-arm64/`
+karena paket `nodejs` apt adalah v24 (di luar `engines >=20 <21`).
+
+```bash
+npm ci
+node node_modules/esbuild/install.js     # npm 11 memblokir install script; tanpa ini build gagal
+npm run build -w @ama/web
+cp .env.example .env                     # isi nilai; lihat §5
+cp config/devices.example.json config/devices.json
+sudo scripts/provision-host.sh           # DB + nginx + systemd + migrasi/seed; idempoten
+sudo systemctl restart ama-collector     # setelah /etc/ama/secrets.json terisi (§5)
+curl -s localhost:3001/api/health
+```
+
+Jalankan ulang `sudo scripts/provision-host.sh` setelah setiap `npm run build -w @ama/web`
+agar `dist` tersinkron ke `/srv/ama-mikrotix/apps/web/dist` (§6).
 
 ## 1. Ringkasan arsitektur
 
@@ -26,17 +46,13 @@ untuk melayani `apps/web/dist` dan meneruskan `/api` + `/socket.io` ke `:3001`.
 
 ## 2. Prasyarat server
 
-- Node.js 20 (lihat `.nvmrc`; `engines` membatasi `>=20 <21`).
-
-  ```bash
-  nvm install && nvm use
-  node -v   # harus v20.x
-  ```
-
-- MariaDB 10.x berjalan dan dapat diakses collector + server.
+- Node.js 20 (lihat `.nvmrc`; `engines` membatasi `>=20 <21`). Paket `nodejs` dari apt di
+  host ini adalah v24, jadi Node 20 dipasang user-space di
+  `~/.local/node-v20.19.5-linux-arm64/bin/node` dan dipakai unit systemd; timpa dengan
+  `AMA_NODE_BIN` bila lokasinya berbeda.
+- MariaDB 11 (`mariadb-server`) dan nginx dipasang oleh `scripts/provision-host.sh` (§0).
 - Host server boleh menjangkau 3 AP (`192.168.5.228`, `.226`, `.120`) di port 22 dan ICMP.
 - Akun monitoring dengan hak minimum di AP (perubahan akun AP perlu izin terpisah).
-- (Opsional) nginx untuk HTTPS dan pembatasan akses jaringan.
 
 ## 3. Ambil kode dan dependensi
 
@@ -44,6 +60,7 @@ untuk melayani `apps/web/dist` dan meneruskan `/api` + `/socket.io` ke `:3001`.
 git clone <repo> ama-mikrotik
 cd ama-mikrotik
 npm ci
+node node_modules/esbuild/install.js   # npm 11 memblokir install script paket
 ```
 
 Untuk menjalankan tes cepat sebelum deploy:
@@ -54,18 +71,14 @@ npm test
 
 ## 4. Siapkan database
 
+`scripts/provision-host.sh` membuat database `ama_monitoring`, akun aplikasi berhak minimum
+(`SELECT, INSERT, UPDATE`, jangan `root`), dan file rahasia §5 — lalu menerapkan
+`db/migrations/*.sql` dan `db/seed/*.sql` sebagai root (akun aplikasi sengaja tanpa hak DDL).
+
+Alternatif tanpa sudo untuk migrasi, bila akun DB di `.env` memang punya hak DDL:
+
 ```bash
-mysql -u root -p < db/migrations/001_init.sql
-mysql -u root -p < db/migrations/002_heartbeat.sql
-mysql -u root -p < db/seed/001_devices.sql
-```
-
-Buat akun aplikasi berhak minimum (jangan pakai `root`):
-
-```sql
-CREATE USER 'ama_app'@'127.0.0.1' IDENTIFIED BY '<password-kuat>';
-GRANT SELECT, INSERT, UPDATE ON ama_monitoring.* TO 'ama_app'@'127.0.0.1';
-FLUSH PRIVILEGES;
+npm run migrate   # db/migrations/*.sql lalu db/seed/*.sql, idempoten (CREATE IF NOT EXISTS)
 ```
 
 Seed hanya membuat 3 AP + baris heartbeat. Tidak ada halaman CRUD perangkat —
@@ -115,21 +128,37 @@ npm run build -w @ama/web
 
 Hasil ada di `apps/web/dist/`.
 
+Nginx (user `www-data`) tidak dapat menembus `~ama-i` yang bermode `700`. Karena itu skrip
+provision menyalin `apps/web/dist` ke `/srv/ama-mikrotix/apps/web/dist`, dan nginx melayani
+salinan itu — jalankan ulang skrip setelah setiap build.
+
 ## 7. Jalankan proses
 
-Jalankan dari root repo:
+Jalankan dari root repo (`.env` dimuat otomatis lewat `--env-file-if-exists`):
 
 ```bash
 npm run collector   # ping + SSH + heartbeat
 npm run server      # REST + Socket.IO di :3001
 ```
 
-Untuk menjalankan tanpa terminal yang menempel, pakai `pm2`, `systemd`, atau
-Task Scheduler Windows (belum disiapkan — lihat bagian terakhir).
+Di host ini keduanya berjalan sebagai unit systemd `ama-server` dan `ama-collector`
+(dipasang `scripts/provision-host.sh`, `Restart=on-failure`):
+
+```bash
+systemctl status ama-server ama-collector
+journalctl -u ama-collector -f
+```
+
+Catatan penting: proses memaksa `TZ=UTC` (`apps/server/src/index.js`,
+`apps/collector/src/main.js`) karena driver MariaDB membaca kolom `DATETIME` sebagai waktu
+lokal — tanpa itu kesegaran data dan sumbu waktu grafik bergeser sebesar offset zona host.
 
 ## 8. Reverse-proxy (nginx)
 
-Contoh: melayani dashboard statis + proxy API dan WebSocket.
+Konfigurasi dipasang oleh `scripts/provision-host.sh` ke
+`/etc/nginx/sites-available/ama-mikrotix.conf`: listen 80 (tanpa TLS, LAN saja), root
+`/srv/ama-mikrotix/apps/web/dist`, proxy `/api/` dan `/socket.io/` ke `127.0.0.1:3001`.
+Versi dengan HTTPS:
 
 ```nginx
 server {
@@ -160,6 +189,9 @@ server {
 }
 ```
 
+Instalasi aktual memakai port 80 tanpa TLS (LAN); blok `443 ssl` di atas hanya contoh
+bila TLS ditambahkan.
+
 Tanpa HTTPS, `AMA_COOKIE_SECURE` harus `false`, dan dashboard/API **tidak** dibuka ke internet.
 
 ## 9. Cek kesehatan
@@ -186,8 +218,12 @@ Penting: collector mati berarti data **stale**. Jangan tampilkan itu sebagai "se
 
 ## 10. Pemecahan masalah
 
-- **`no secret configured for device N`** — rahasia tidak terbaca. Cek `AMA_DEVICE_N_PASSWORD`
-  atau isi/izin `AMA_SECRETS_FILE`.
+- **`code:no_secret` pada log `collect`** — berkas rahasia tidak ada/tidak terbaca untuk AP itu.
+  Cek entri `"<device id>"` dan izin `AMA_SECRETS_FILE`. Isi berkas di-cache saat pertama
+  dibaca, jadi **restart collector** setelah mengubahnya.
+- **`job_failed` pada log collector** — kegagalan di luar dugaan (bukan kegagalan koneksi);
+  `code` berisi pesan error. Kegagalan koneksi/SSH justru muncul sebagai `collect` dengan
+  `status:error`, bukan `job_failed`.
 - **Semua koleksi sistem gagal, ping tetap OK** — cek `hostKeyFingerprint` (harus cocok),
   kredensial SSH, dan port. Ping sukses tidak berarti SSH sukses.
 - **Dashboard kosong / 401** — cookie sesi HttpOnly butuh same-origin; pastikan
@@ -196,25 +232,32 @@ Penting: collector mati berarti data **stale**. Jangan tampilkan itu sebagai "se
 - **Log** — JSON ke stdout/stderr: hanya device ID, waktu, durasi, status, kode error aman.
   Tidak ada rahasia/isi mentah. Verifikasi koleksi nyata lewat log collector, bukan fixture.
 
+- **HTTP 500 `internal_error`** — `journalctl -u ama-server` mencatat `event:api_error` dengan
+  `method`, `path`, `code`, dan `message`; query gagal dan kolom BIGINT/DECIMAL yang tidak bisa
+  diserialisasi tampil di sini.
+
 ## 11. Backup
 
 Disarankan sebelum uji operasional berkelanjutan. Contoh dump harian:
 
 ```bash
-mysqldump -u ama_app -p ama_monitoring | gzip > /var/backups/ama-$(date +%F).sql.gz
+sudo mysqldump --single-transaction ama_monitoring | gzip > /var/backups/ama-$(date +%F).sql.gz
 ```
 
 Simpan di luar host aplikasi, batasi akses file, dan uji restore secara berkala.
 Jangan campur backup dengan file `.env`/rahasia dalam satu arsip tanpa enkripsi.
 
-## 12. Yang belum ditentukan
+## 12. Keputusan deploy
 
-Item berikut menunggu keputusan (rujuk `docs/konsep-mvp.md` §9.9 dan §12):
+Diputuskan saat deploy ke host ini (2026-10):
 
-- **Autostart/restart service** — pilih `systemd` (Linux), Task Scheduler/NSSM (Windows),
-  atau `pm2`. `systemd` hanya salah satu opsi dan bukan asumsi.
+- **Autostart/restart** — `systemd`: `ama-server.service`, `ama-collector.service`,
+  `Restart=on-failure`, `RestartSec=5`. Berjalan sebagai user pemilik repo, bukan root.
+- **OS/lokasi server** — Raspberry Pi, Debian 13 arm64, `192.168.0.103`, tidak diekspos ke internet.
+- **TLS** — belum. nginx listen 80 di LAN, `AMA_COOKIE_SECURE=false`. Pasang TLS sebelum
+  diakses dari luar LAN.
+
+Masih terbuka:
+
 - **Retensi histori** — belum ada penghapusan otomatis; jangan aktifkan tanpa persetujuan.
-- **Jadwal backup & uji restore** — belum disepakati.
-- **OS/lokasi server target** — belum dikonfirmasi; mesin lokal Windows bukan otomatis server produksi.
-
-Setelah item di atas diputuskan, tambahkan unit service contoh dan jadwal backup di dokumen ini.
+- **Jadwal backup & uji restore** — baru contoh manual (§11), belum dijadwalkan.

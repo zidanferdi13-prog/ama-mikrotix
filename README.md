@@ -42,15 +42,14 @@ fixtures/        # keluaran manual AP (hanya untuk uji parser)
 1. **Dependensi**
 
    ```bash
-   npm install
+   npm ci
+   node node_modules/esbuild/install.js   # npm 11 memblokir install script paket
    ```
 
 2. **Database**
 
    ```bash
-   mysql -u root -p < db/migrations/001_init.sql
-   mysql -u root -p < db/migrations/002_heartbeat.sql
-   mysql -u root -p < db/seed/001_devices.sql
+   npm run migrate   # skema (db/migrations) + seed 3 AP (db/seed), idempoten
    ```
 
    Buat akun aplikasi berhak minimum (mis. `ama_app`) dan beri akses ke `ama_monitoring`.
@@ -66,6 +65,9 @@ fixtures/        # keluaran manual AP (hanya untuk uji parser)
    Isi `.env` (rahasia DB, `AMA_AUTH_USER`/`AMA_AUTH_PASSWORD`, `AMA_JWT_SECRET`) dan
    `config/devices.json`. Rahasia SSH **tidak** masuk `config/devices.json`; pakai
    `AMA_DEVICE_<ID>_PASSWORD` atau `AMA_SECRETS_FILE`.
+
+   `username`, `port`, dan `hostKeyFingerprint` diisi **per AP** — bisa berbeda satu sama lain
+   (mis. AP lain memakai akun sendiri, bukan `admin`).
 
 ## Menjalankan
 
@@ -87,6 +89,22 @@ npm test
 
 Menjalankan `node --test` untuk `packages/shared/test`, `apps/collector/test`, dan `apps/server/test`.
 Parser, transisi status, penjadwal, dan API diuji tanpa koneksi jaringan/SSH nyata.
+
+## Deploy
+
+Panduan lengkap di `docs/devops.md` (§0 jalur cepat). Ringkasnya:
+
+```bash
+npm ci && node node_modules/esbuild/install.js
+npm run build -w @ama/web
+cp .env.example .env                          # isi rahasia
+cp config/devices.example.json config/devices.json
+sudo scripts/provision-host.sh                # DB + nginx + systemd + migrasi/seed (idempoten)
+curl -s localhost:3001/api/health
+```
+
+Skrip provision menyalin build dashboard ke `/srv/ama-mikrotix/apps/web/dist` (nginx tidak
+bisa membaca `~` pemilik repo yang bermode 700) — jalankan ulang setelah setiap build.
 
 ## Catatan operasional
 

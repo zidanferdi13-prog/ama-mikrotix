@@ -110,7 +110,15 @@ export function createApp({ pool, allowedOrigin }) {
 
   // Error handler: log aman, respons generik.
   app.use((err, req, res, _next) => {
-    process.stderr.write(`${JSON.stringify({ ts: new Date().toISOString(), level: 'error', event: 'api_error' })}\n`);
+    process.stderr.write(`${JSON.stringify({
+      ts: new Date().toISOString(),
+      level: 'error',
+      event: 'api_error',
+      method: req.method,
+      path: req.path,
+      code: err?.code ?? err?.name ?? 'unknown',
+      message: err?.message ?? '',
+    })}\n`);
     res.status(500).json({ error: 'internal_error' });
   });
 

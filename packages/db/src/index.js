@@ -11,6 +11,9 @@ export function dbConfigFromEnv(env = process.env) {
     connectionLimit: Number(env.AMA_DB_POOL ?? 5),
     timezone: 'Z',
     dateStrings: false,
+    // Driver mengembalikan BIGINT sebagai BigInt → JSON.stringify melempar TypeError.
+    // Nilai yang ada (id, byte) jauh di bawah 2^53, jadi aman sebagai Number.
+    bigIntAsNumber: true,
   };
 }
 

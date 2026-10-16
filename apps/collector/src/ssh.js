@@ -42,10 +42,18 @@ function execCommand(conn, command, timeoutMs) {
 // Ambil tiga perintah tetap; tutup koneksi di semua jalur.
 export async function collectSystem(deviceId, device) {
   const observedAt = new Date().toISOString();
-  const conn = new Client();
-  const auth = resolveSshAuth(device);
-
   const outputs = {};
+  let auth = null;
+
+  try {
+    auth = resolveSshAuth(device);
+  } catch {
+    // Rahasia tidak ada/tidak terbaca: kegagalan koleksi, bukan penghentian siklus.
+    return { observedAt, outputs, connectError: 'no_secret' };
+  }
+
+  const conn = new Client();
+
   let connectError = null;
   let hostKeyReason = null;
 

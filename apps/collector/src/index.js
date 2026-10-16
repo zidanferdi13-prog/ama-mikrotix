@@ -57,7 +57,12 @@ export async function startCollector({ pool, configPath } = {}) {
     });
   }
 
-  const scheduler = createScheduler({ jobs });
+  const scheduler = createScheduler({
+    jobs,
+    onError: ({ job, err }) => {
+      log.error({ event: 'job_failed', deviceId: job.deviceId, kind: job.kind, code: err?.message ?? 'unknown' });
+    },
+  });
   scheduler.start();
 
   const heartbeat = setInterval(() => writeHeartbeat(pool), HEARTBEAT_MS);

@@ -1,0 +1,32 @@
+{
+  "healthPath": "./.runtime/collector-health.json",
+  "devices": [
+    {
+      "id": 1,
+      "name": "APOfficeLT1",
+      "ip": "192.168.5.228",
+      "vendor": "Ubiquiti",
+      "model": "UAP-AC-LR",
+      "firmware": "6.8.2.15592",
+      "username": "admin",
+      "port": 22,
+      "hostKeyFingerprint": "sha256:JxuhQ7joWRHUY6fO2ZjOmUWTc5YgTutBIlV/12098/k="
+    },
+    {
+      "id": 2,
+      "name": "APOfficeLT2",
+      "ip": "192.168.5.226",
+      "username": "admin",
+      "port": 22,
+      "hostKeyFingerprint": "sha256:YCPXecrRWsX/aLUxeF6Mo25urcwnct/jB/aPQE//qWY="
+    },
+    {
+      "id": 3,
+      "name": "APNUSANTARA",
+      "ip": "192.168.5.120",
+      "username": "MORTINDO",
+      "port": 22,
+      "hostKeyFingerprint": "sha256:6AKZIKq+OchBMLm0zyyh3P2LC6EV19sAKSkZCvDpzkU="
+    }
+  ]
+}
