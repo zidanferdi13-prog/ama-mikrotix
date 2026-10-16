@@ -12,6 +12,11 @@ export function formatTime(iso) {
   }).format(d)} WIB`;
 }
 
+// Jam:menit WIB untuk label sumbu-X grafik.
+export function formatClock(ms) {
+  return new Intl.DateTimeFormat('id-ID', { timeZone: WIB, hour: '2-digit', minute: '2-digit' }).format(new Date(ms));
+}
+
 export function formatRelative(iso, nowMs = Date.now()) {
   if (!iso) return '—';
   const age = nowMs - new Date(iso).getTime();

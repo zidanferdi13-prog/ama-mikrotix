@@ -869,6 +869,49 @@ select[aria-invalid='true'] {
   color: var(--chart);
 }
 
+.chart-xlabels {
+  position: relative;
+  height: 1.2rem;
+}
+
+.chart-xlabels span {
+  position: absolute;
+  top: 0.2rem;
+  transform: translateX(-50%);
+  font-size: 0.7rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.chart-xlabels span.first {
+  transform: none;
+}
+
+.chart-xlabels span.last {
+  transform: translateX(-100%);
+}
+
+.chart-readout {
+  margin: 0 0 var(--sp-1);
+  min-height: 1.2em;
+  font-size: 0.8rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
+}
+
+.chart-cursor {
+  stroke: var(--text-muted);
+  stroke-width: 1;
+  stroke-dasharray: 3 3;
+}
+
+.chart-hover {
+  fill: var(--chart);
+  stroke: var(--surface);
+  stroke-width: 2;
+}
+
 .chart-grid {
   stroke: var(--line);
   stroke-width: 1;

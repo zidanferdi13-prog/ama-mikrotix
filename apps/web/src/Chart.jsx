@@ -4,6 +4,7 @@
 // ponytail: cukup untuk 1–24 jam dan puluhan titik; pindah ke pustaka grafik
 // hanya bila perlu zoom/brush/tooltip kaya.
 import React, { useEffect, useState } from 'react';
+import { formatClock, formatTime } from './format.js';
 
 const PAD = { top: 10, right: 10, bottom: 10, left: 0 };
 
@@ -77,6 +78,7 @@ function segmentsOf(points) {
 export default function Chart({ values, label, unit, height, compact = false, digits = 1 }) {
   const chartHeight = height ?? (compact ? 30 : 180);
   const [width, setCanvasNode] = useMeasuredWidth(compact ? 180 : 520);
+  const [hover, setHover] = useState(null);
 
   const points = normalize(values);
   const valid = points.filter((point) => point.y !== null);
@@ -147,6 +149,17 @@ export default function Chart({ values, label, unit, height, compact = false, di
     last ? `, nilai terakhir ${last.y.toFixed(digits)}` : ''
   }.`;
 
+  // Sumbu-X waktu (x = epoch ms dari observed_at) + titik maksimum, supaya waktu anomali terbaca.
+  const maxPoint = valid.find((point) => point.y === rawMax);
+  const xTicks = compact || xMax === xMin ? [] : [0, 1, 2, 3, 4].map((i) => xMin + ((xMax - xMin) * i) / 4);
+  const onMove = (event) => {
+    const rect = event.currentTarget.getBoundingClientRect();
+    const px = ((event.clientX - rect.left) / rect.width) * width;
+    let best = valid[0];
+    for (const point of valid) if (Math.abs(sx(point.x) - px) < Math.abs(sx(best.x) - px)) best = point;
+    setHover(best);
+  };
+
   const svg = (
     <svg
       ref={setCanvasNode}
@@ -156,6 +169,8 @@ export default function Chart({ values, label, unit, height, compact = false, di
       viewBox={`0 0 ${width} ${chartHeight}`}
       role="img"
       aria-label={description}
+      onMouseMove={compact ? undefined : onMove}
+      onMouseLeave={compact ? undefined : () => setHover(null)}
     >
       {ticks.map((tick) => (
         <line
@@ -200,6 +215,12 @@ export default function Chart({ values, label, unit, height, compact = false, di
         ),
       )}
       <circle className="chart-last" cx={sx(last.x)} cy={sy(last.y)} r={compact ? 2 : 3} />
+      {hover && (
+        <>
+          <line className="chart-cursor" x1={sx(hover.x)} x2={sx(hover.x)} y1={PAD.top} y2={baseline} />
+          <circle className="chart-hover" cx={sx(hover.x)} cy={sy(hover.y)} r={4} />
+        </>
+      )}
     </svg>
   );
 
@@ -222,8 +243,11 @@ export default function Chart({ values, label, unit, height, compact = false, di
           Rata-rata <b>{average.toFixed(digits)}</b>
         </span>
         <span>
-          Maks <b>{rawMax.toFixed(digits)}</b>
+          Maks <b>{rawMax.toFixed(digits)}</b> <span className="sub">({formatTime(maxPoint.x)})</span>
         </span>
+      </p>
+      <p className="chart-readout" aria-live="polite">
+        {hover ? `${formatTime(hover.x)} · ${hover.y.toFixed(digits)}${unit ? ` ${unit}` : ''}` : '\u00a0'}
       </p>
       <div className="chart-plot">
         <div className="chart-ylabels" style={{ height: chartHeight }} aria-hidden="true">
@@ -233,7 +257,17 @@ export default function Chart({ values, label, unit, height, compact = false, di
             </span>
           ))}
         </div>
-        <div className="chart-canvas">{svg}</div>
+        <div className="chart-canvas">
+          {svg}
+          <div className="chart-xlabels" aria-hidden="true">
+            {xTicks.map((tick, i) => (
+              <span key={tick} className={i === 0 ? 'first' : i === xTicks.length - 1 ? 'last' : undefined} style={{ left: `${sx(tick)}px` }}>
+                {formatClock(tick)}
+                {i === xTicks.length - 1 ? ' WIB' : ''}
+              </span>
+            ))}
+          </div>
+        </div>
       </div>
     </figure>
   );
