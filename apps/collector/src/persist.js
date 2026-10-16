@@ -30,7 +30,14 @@ const SQL = {
   // Snapshot client per siklus sistem; identitas = (device_id, mac). Hostname/IP tidak disimpan.
   clientColumns: `INSERT INTO client_observations
       (device_id, mac, observed_at, signal_dbm, rssi, rx_bytes, tx_bytes, uptime_s, radio, vap) VALUES `,
-  pruneClients: 'DELETE FROM client_observations WHERE observed_at < ?',
+  // Retensi: hapus berdasarkan umur. alert_events ikut terhapus (FK ON DELETE CASCADE).
+  // ponytail: device_metrics tidak punya indeks yang diawali observed_at → scan penuh
+  // tiap jam (~200 MB pada 30 hari). Bila terasa lambat, tambah migrasi indeks observed_at.
+  prune: {
+    clients: 'DELETE FROM client_observations WHERE observed_at < ?',
+    metrics: 'DELETE FROM device_metrics WHERE observed_at < ?',
+    alerts: "DELETE FROM alerts WHERE status = 'resolved' AND resolved_at < ?",
+  },
   heartbeat: `INSERT INTO collector_heartbeat (id, last_heartbeat_at, last_error_code)
     VALUES (1, ?, ?) ON DUPLICATE KEY UPDATE last_heartbeat_at = VALUES(last_heartbeat_at), last_error_code = VALUES(last_error_code)`,
 };
@@ -182,11 +189,11 @@ export async function persistClients(pool, deviceId, observedAt, clients) {
   }
 }
 
-export async function pruneClients(pool, beforeMs) {
+export async function prune(pool, kind, beforeMs) {
   try {
-    await pool.query(SQL.pruneClients, [dt(beforeMs)]);
+    await pool.query(SQL.prune[kind], [dt(beforeMs)]);
   } catch (err) {
-    log.error({ event: 'prune_failed', kind: 'clients', code: err.message });
+    log.error({ event: 'prune_failed', kind, code: err.message });
   }
 }
 

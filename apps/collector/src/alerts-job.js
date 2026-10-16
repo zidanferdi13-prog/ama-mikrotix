@@ -11,7 +11,7 @@ import {
   evaluateDeviceRules,
   planAlertChanges,
 } from '@ama/shared';
-import { pruneClients } from './persist.js';
+import { prune } from './persist.js';
 import { log } from './logger.js';
 
 const LOCK_NAME = 'ama_alert_eval';
@@ -405,7 +405,9 @@ export function startAlertJob(pool, { intervalMs = ALERT.evalIntervalMs } = {}) 
     }
     if (started - lastPruneAt >= PRUNE_MS) {
       lastPruneAt = started;
-      await pruneClients(pool, started - ALERT.clientRetentionMs);
+      await prune(pool, 'clients', started - ALERT.retentionMs.clients);
+      await prune(pool, 'metrics', started - ALERT.retentionMs.metrics);
+      await prune(pool, 'alerts', started - ALERT.retentionMs.alerts);
     }
   }
 

@@ -346,6 +346,10 @@ Diputuskan saat menambah alert proaktif & insiden (2026-10):
 - **Warna sinyal client** memakai ambang rule yang sama (-70/-80 dBm dari
   `@ama/shared/constants`): hijau bagus, kuning lemah, merah sangat lemah. Kata "bagus/lemah/
   sangat lemah" selalu tampil, warna hanya penguat (aman buta warna).
+- **Retensi otomatis** (tiap jam di collector, `ALERT.retentionMs`): `client_observations` 24 jam,
+  `device_metrics` 30 hari (riwayat API maksimum 24 jam), `alerts` yang `resolved` 90 hari sejak
+  `resolved_at` — `alert_events`-nya ikut terhapus lewat `ON DELETE CASCADE`. Alert terbuka tidak
+  pernah dihapus. Kegagalan prune hanya log `prune_failed`, evaluasi tetap jalan.
 - **Sudah diterapkan di host ini (2026-10-16)** — migrasi `005` dijalankan sebagai root via socket
   (`sudo mysql --protocol=socket -uroot ama_monitoring < db/migrations/005_alerts.sql`), build
   dashboard disalin ke `/srv/ama-mikrotix/apps/web/dist`, lalu `ama-server` + `ama-collector`
@@ -353,6 +357,5 @@ Diputuskan saat menambah alert proaktif & insiden (2026-10):
 
 Masih terbuka:
 
-- **Retensi histori** — `client_observations` kini dihapus otomatis (24 jam). `device_metrics`,
-  `monitoring_events`, `alerts`, dan `alert_events` **belum** punya penghapusan otomatis.
+- **Retensi `monitoring_events`** — belum dihapus otomatis (baris sedikit: hanya transisi status).
 - **Jadwal backup & uji restore** — baru contoh manual (§11), belum dijadwalkan.

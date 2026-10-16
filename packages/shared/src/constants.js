@@ -67,7 +67,9 @@ export const ALERT = {
   // updated_at (dan emit realtime) tidak bergetar tiap 15 detik.
   touchIntervalMs: 60_000,
   collectorStaleMs: 90_000, // sama dengan getHealth server
-  clientRetentionMs: 24 * 60 * MIN_MS, // client_observations dihapus setelah ini
+  // Dihapus tiap jam oleh collector. metrics > HISTORY.maxRangeMs; alerts hanya yang
+  // resolved (dihitung dari resolved_at) dan > cooldown, jadi reopen tidak terganggu.
+  retentionMs: { clients: 24 * 60 * MIN_MS, metrics: 30 * 24 * 60 * MIN_MS, alerts: 90 * 24 * 60 * MIN_MS },
   apFlapping: { windowMs: 15 * MIN_MS, transitions: 3 },
   clientFlapping: { windowMs: 15 * MIN_MS, episodes: 3 },
   // Client dianggap pergi setelah absen pada N snapshot sukses beruntun (bukan 1).
