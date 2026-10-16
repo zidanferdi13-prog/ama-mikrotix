@@ -33,6 +33,7 @@ export const METRICS = {
     'memory_available_bytes',
     'memory_used_bytes',
     'memory_used_percent',
+    'client_count',
   ],
 };
 
@@ -86,5 +87,6 @@ export function makeSystemSample({ deviceId, observedAt, collectionStatus, metri
     memory_available_bytes: values.memory_available_bytes,
     memory_used_bytes: values.memory_used_bytes,
     memory_used_percent: values.memory_used_percent,
+    client_count: values.client_count,
   };
 }

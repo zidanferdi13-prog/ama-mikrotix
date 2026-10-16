@@ -84,6 +84,7 @@ export async function collectSystem(deviceId, device) {
       if (command.includes('uptime')) outputs.uptime = res.ok ? res.stdout : undefined;
       else if (command.includes('loadavg')) outputs.loadavg = res.ok ? res.stdout : undefined;
       else if (command.includes('meminfo')) outputs.meminfo = res.ok ? res.stdout : undefined;
+      else if (command.includes('mca-dump')) outputs.mcaDump = res.ok ? res.stdout : undefined;
     }
   } catch (err) {
     connectError = hostKeyReason ?? 'connect_failed';

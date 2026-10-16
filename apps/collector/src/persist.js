@@ -8,8 +8,8 @@ const SQL = {
       (device_id, kind, observed_at, received_at, collection_status,
        reachable, latency_ms, uptime_seconds, load_1, load_5, load_15,
        memory_total_bytes, memory_available_bytes, memory_used_bytes, memory_used_percent,
-       metric_status)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+       client_count, metric_status)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
   selectDevice: 'SELECT * FROM devices WHERE id = ? FOR UPDATE',
   updateDevice: `UPDATE devices SET
       reachable = ?, ping_fail_count = ?, ping_ok_count = ?, last_ping_attempt_at = ?
@@ -73,7 +73,7 @@ export async function persistPing(pool, sample) {
       sample.collection_status,
       sample.reachable === null ? null : sample.reachable ? 1 : 0,
       sample.latency_ms,
-      null, null, null, null, null, null, null, null,
+      null, null, null, null, null, null, null, null, null,
       JSON.stringify({ reachable: { status: sample.reachable === null ? 'unsupported' : 'ok', code: sample.code ?? null } }),
     ]);
 
@@ -136,6 +136,7 @@ export async function persistSystem(pool, sample) {
       sample.memory_available_bytes,
       sample.memory_used_bytes,
       sample.memory_used_percent,
+      sample.client_count,
       JSON.stringify(sample.metric_status ?? {}),
     ]);
 

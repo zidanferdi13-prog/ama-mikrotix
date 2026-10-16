@@ -20,8 +20,9 @@ import {
   clearSecretUpdated,
 } from './queries.js';
 import { parseDeviceInput, parseProbeInput } from './device-input.js';
-import { hasSecret as hasStoredSecret, setSecret, removeSecret } from './secrets-file.js';
+import { hasSecret as hasStoredSecret, readAll as readSecrets, setSecret, removeSecret } from './secrets-file.js';
 import { probeHostKey } from './ssh-probe.js';
+import { listClients } from './ssh-clients.js';
 import { log } from './logger.js';
 
 function isInt(value) {
@@ -37,7 +38,7 @@ function emptySeries(buckets) {
   return { latency: new Array(buckets).fill(null), ram: new Array(buckets).fill(null) };
 }
 
-export function createApp({ pool, allowedOrigin, probe = probeHostKey }) {
+export function createApp({ pool, allowedOrigin, probe = probeHostKey, clients = listClients }) {
   const app = express();
   app.use(express.json({ limit: '64kb' }));
   app.use(cookieParser());
@@ -239,6 +240,38 @@ export function createApp({ pool, allowedOrigin, probe = probeHostKey }) {
       if (!device) return res.status(404).json({ error: 'not_found' });
       const metrics = await getMetrics(pool, Number(req.params.id), range, kind);
       return res.json({ device_id: Number(req.params.id), from: range.from, to: range.to, metrics });
+    } catch (err) {
+      return next(err);
+    }
+  });
+
+  // Daftar client live: SSH sesaat ke AP dengan host key tersemat. Tidak disimpan ke DB.
+  app.get('/api/devices/:id/clients', requireAuth, async (req, res, next) => {
+    try {
+      if (!isInt(req.params.id)) return res.status(400).json({ error: 'invalid_id' });
+      const id = Number(req.params.id);
+      const device = await getDevice(pool, id, hasStoredSecret);
+      if (!device) return res.status(404).json({ error: 'not_found' });
+      const password = readSecrets()[String(id)];
+      if (typeof password !== 'string' || password === '') return res.status(409).json({ error: 'no_secret' });
+
+      const result = await clients({
+        ip: device.ip,
+        port: device.port ?? 22,
+        username: device.username,
+        password,
+        hostKeyFingerprint: device.host_key_fingerprint,
+      });
+      if (!result.ok) {
+        log.info({ event: 'clients_failed', deviceId: id, code: result.code });
+        return res.status(502).json({ error: 'clients_failed', code: result.code });
+      }
+      return res.json({
+        observed_at: result.observedAt,
+        total: result.total,
+        truncated: result.truncated,
+        clients: result.clients,
+      });
     } catch (err) {
       return next(err);
     }

@@ -17,6 +17,7 @@ process.env.AMA_SECRETS_FILE = SECRETS_FILE;
 
 const { createApp } = await import('../src/app.js');
 const { probeHostKey } = await import('../src/ssh-probe.js');
+const { listClients } = await import('../src/ssh-clients.js');
 
 function writeSecrets(data) {
   writeFileSync(SECRETS_FILE, `${JSON.stringify(data, null, 2)}\n`, { mode: 0o600 });
@@ -509,4 +510,179 @@ test('GET /api/devices & /:id memuat field kontrak', async () => {
     assert.equal(detail.has_secret, true);
     assertNoSecret(detail, 'lama');
   });
+});
+
+test('GET /api/devices/:id/clients: 400/404/409/502/200 + tanpa rahasia di respons/log', async () => {
+  const store = createStubPool();
+  const pinned = `sha256:${'B'.repeat(43)}=`;
+  const device = store.addDevice({ name: 'AP-C', ip: '192.168.5.228', username: 'monitor', host_key_fingerprint: pinned });
+  const tanpaRahasia = store.addDevice({ name: 'AP-N', ip: '192.168.5.226' });
+  writeSecrets({ [device.id]: 'rahasiaClients' });
+
+  const client = {
+    hostname: 'laptop', ip: '192.168.5.50', mac: 'aa:bb:cc:dd:ee:ff', radio: 'na', ssid: 'wlan0',
+    signal: -55, rssi: 40, uptime_s: 120, tx_bytes: 1, rx_bytes: 2, tx_rate: 3, rx_rate: 4, satisfaction: 98,
+  };
+  let received = null;
+  const observedAt = '2026-10-16T01:02:03.000Z';
+
+  await withServer(store, async (base) => {
+    const unauth = await fetch(`${base}/api/devices/${device.id}/clients`);
+    assert.equal(unauth.status, 401);
+
+    const cookie = await login(base);
+    const bad = await call(base, cookie, '/api/devices/abc/clients');
+    assert.equal(bad.status, 400);
+    assert.deepEqual(await bad.json(), { error: 'invalid_id' });
+
+    const missing = await call(base, cookie, '/api/devices/999/clients');
+    assert.equal(missing.status, 404);
+    assert.deepEqual(await missing.json(), { error: 'not_found' });
+
+    const noSecret = await call(base, cookie, `/api/devices/${tanpaRahasia.id}/clients`);
+    assert.equal(noSecret.status, 409);
+    assert.deepEqual(await noSecret.json(), { error: 'no_secret' });
+
+    const ok = await call(base, cookie, `/api/devices/${device.id}/clients`);
+    assert.equal(ok.status, 200);
+    const body = await ok.json();
+    assert.deepEqual(body, { observed_at: observedAt, total: 1, truncated: false, clients: [client] });
+    assertNoSecret(body, 'rahasiaClients');
+    assert.deepEqual(received, {
+      ip: '192.168.5.228', port: 22, username: 'monitor', password: 'rahasiaClients', hostKeyFingerprint: pinned,
+    });
+  }, {
+    clients: async (args) => {
+      received = args;
+      return { ok: true, clients: [client], total: 1, truncated: false, observedAt };
+    },
+  });
+
+  await withServer(store, async (base) => {
+    const cookie = await login(base);
+    const lines = [];
+    const original = process.stdout.write.bind(process.stdout);
+    process.stdout.write = (chunk, ...rest) => {
+      lines.push(String(chunk));
+      return original(chunk, ...rest);
+    };
+    let res;
+    try {
+      res = await call(base, cookie, `/api/devices/${device.id}/clients`);
+    } finally {
+      process.stdout.write = original;
+    }
+    assert.equal(res.status, 502);
+    assert.deepEqual(await res.json(), { error: 'clients_failed', code: 'host_key_changed' });
+    const joined = lines.join('');
+    assert.match(joined, /clients_failed/);
+    assert.doesNotMatch(joined, /rahasiaClients|192\.168\.5\.228/);
+  }, { clients: async () => ({ ok: false, code: 'host_key_changed' }) });
+});
+
+test('listClients: host key wajib cocok, pemetaan mca-dump, batas 200, koneksi selalu ditutup', async () => {
+  const hostKey = Buffer.from('host-key-bytes');
+  const pinned = `sha256:${createHash('sha256').update(hostKey).digest('base64')}`;
+  const auth = { ip: '192.168.5.228', port: 22, username: 'monitor', password: 'rahasiaClients' };
+
+  // Stub ssh2: hostVerifier dipanggil seperti ssh2 asli; ditolak → error lalu tidak ready.
+  function fakeClient({ stdout = '', fail, execError, hang } = {}) {
+    const client = new EventEmitter();
+    client.closed = 0;
+    client.commands = [];
+    client.end = () => { client.closed += 1; };
+    client.destroy = () => { client.closed += 1; };
+    client.connect = (config) => {
+      client.config = config;
+      if (hang) return;
+      setImmediate(() => {
+        if (!config.hostVerifier(hostKey)) {
+          client.emit('error', Object.assign(new Error('host key ditolak'), { level: 'client-socket' }));
+          return;
+        }
+        if (fail) {
+          client.emit('error', Object.assign(new Error('gagal'), fail));
+          return;
+        }
+        client.emit('ready');
+      });
+    };
+    client.exec = (command, cb) => {
+      client.commands.push(command);
+      if (execError) {
+        cb(new Error('exec gagal'));
+        return;
+      }
+      const stream = new EventEmitter();
+      stream.stderr = new EventEmitter();
+      cb(null, stream);
+      setImmediate(() => {
+        stream.emit('data', Buffer.from(stdout));
+        stream.emit('close');
+      });
+    };
+    return client;
+  }
+  const run = (client, extra = {}, opts = {}) =>
+    listClients({ ...auth, ...extra }, { Client: function StubClient() { return client; }, ...opts });
+
+  const dump = JSON.stringify({
+    vap_table: [
+      {
+        name: 'wlan0', radio: 'ng', num_sta: 1,
+        sta_table: [{
+          hostname: 'hp', ip: '192.168.5.50', mac: 'aa:bb:cc:dd:ee:ff', rssi: 40, signal: -56,
+          uptime: 300, tx_bytes: 10, rx_bytes: 20, tx_rate: 72000, rx_rate: 65000, satisfaction: 97,
+        }],
+      },
+      { name: 'wlan1', radio: 'na', num_sta: 1, sta_table: [{ mac: '11:22:33:44:55:66' }] },
+    ],
+  });
+  const okClient = fakeClient({ stdout: dump });
+  const ok = await run(okClient, { hostKeyFingerprint: pinned });
+  assert.equal(ok.ok, true);
+  assert.equal(ok.total, 2);
+  assert.equal(ok.truncated, false);
+  assert.match(ok.observedAt, /^\d{4}-\d{2}-\d{2}T.*Z$/);
+  assert.deepEqual(ok.clients[0], {
+    hostname: 'hp', ip: '192.168.5.50', mac: 'aa:bb:cc:dd:ee:ff', radio: 'ng', ssid: 'wlan0',
+    signal: -56, rssi: 40, uptime_s: 300, tx_bytes: 10, rx_bytes: 20, tx_rate: 72000, rx_rate: 65000, satisfaction: 97,
+  });
+  // Field yang tidak ada → null, bukan nol.
+  assert.equal(ok.clients[1].hostname, null);
+  assert.equal(ok.clients[1].signal, null);
+  assert.equal(ok.clients[1].ssid, 'wlan1');
+  assert.deepEqual(okClient.commands, ['mca-dump']);
+  assert.equal(okClient.config.password, 'rahasiaClients');
+  assert.equal(okClient.closed, 2, 'end + destroy dipanggil di finally');
+
+  // Lebih dari 200 client → dipotong, total tetap jumlah seluruhnya.
+  const many = JSON.stringify({
+    vap_table: [{ name: 'wlan0', radio: 'ng', num_sta: 250, sta_table: Array.from({ length: 250 }, (_, i) => ({ mac: `m${i}` })) }],
+  });
+  const truncated = await run(fakeClient({ stdout: many }), { hostKeyFingerprint: pinned });
+  assert.equal(truncated.clients.length, 200);
+  assert.equal(truncated.total, 250);
+  assert.equal(truncated.truncated, true);
+
+  const cases = [
+    [{}, { hostKeyFingerprint: null }, 'host_key_unpinned'],
+    [{}, { hostKeyFingerprint: `sha256:${'C'.repeat(43)}=` }, 'host_key_changed'],
+    [{ fail: { level: 'client-authentication' } }, { hostKeyFingerprint: pinned }, 'auth_failed'],
+    [{ fail: { level: 'client-socket' } }, { hostKeyFingerprint: pinned }, 'connect_failed'],
+    [{ stdout: 'bukan json' }, { hostKeyFingerprint: pinned }, 'parse_failed'],
+    [{ stdout: '{"uptime":1}' }, { hostKeyFingerprint: pinned }, 'parse_failed'],
+    [{ execError: true }, { hostKeyFingerprint: pinned }, 'connect_failed'],
+  ];
+  for (const [opts, extra, code] of cases) {
+    const client = fakeClient(opts);
+    const result = await run(client, extra);
+    assert.deepEqual(result, { ok: false, code }, code);
+    assert.equal(client.closed, 2, `end + destroy dipanggil (${code})`);
+  }
+
+  const hanging = fakeClient({ hang: true });
+  const timeout = await run(hanging, { hostKeyFingerprint: pinned }, { timeoutMs: 20 });
+  assert.deepEqual(timeout, { ok: false, code: 'timeout' });
+  assert.equal(hanging.closed, 2);
 });

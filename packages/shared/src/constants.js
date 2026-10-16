@@ -43,6 +43,8 @@ export const SYSTEM_COMMANDS = [
   'cat /proc/uptime',
   'cat /proc/loadavg',
   'cat /proc/meminfo',
+  // Jumlah client Wi-Fi; UniFi menjawab JSON. Vendor lain → parser unsupported.
+  'mca-dump',
 ];
 
 export const KINDS = {

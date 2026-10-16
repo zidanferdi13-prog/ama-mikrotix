@@ -67,6 +67,7 @@ export const api = {
     const qs = params.toString();
     return request(`/api/devices/${id}/metrics${qs ? `?${qs}` : ''}`);
   },
+  clients: (id) => request(`/api/devices/${id}/clients`),
   alerts: (limit = 20) => request(`/api/alerts?limit=${limit}`),
   health: () => request('/api/health'),
 };

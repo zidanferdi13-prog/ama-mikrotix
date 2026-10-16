@@ -8,6 +8,7 @@ import {
   parseUptime,
   parseLoadavg,
   parseMeminfo,
+  parseClientCount,
   normalizeSystemSample,
 } from '../src/parser.js';
 import { METRIC_STATUS, ERROR_CODE } from '../src/contracts.js';
@@ -128,4 +129,58 @@ test('semua metrik gagal → collection_status error, semua nilai null', () => {
 test('/proc/uptime field kedua tidak dipakai sebagai CPU %', () => {
   const a = parseUptime('100.00 999999.99');
   assert.equal(a.uptime_seconds.value, 100);
+});
+
+// `mca-dump` UniFi: jumlah client = Σ num_sta. Data tak terbaca tidak pernah jadi nol.
+test('parseClientCount: jumlah num_sta, rusak → invalid, tanpa vap_table → unsupported', () => {
+  const valid = '{"vap_table":[{"name":"wlan0","num_sta":5},{"name":"wlan1","num_sta":3}]}';
+  assert.equal(parseClientCount(valid).client_count.status, METRIC_STATUS.ok);
+  assert.equal(parseClientCount(valid).client_count.value, 8);
+  assert.equal(parseClientCount('{"vap_table":[]}').client_count.value, 0);
+
+  // Vendor tanpa dukungan: bukan error, tapi juga bukan nol.
+  assert.equal(parseClientCount('{"uptime":120}').client_count.status, METRIC_STATUS.unsupported);
+  assert.equal(parseClientCount('[]').client_count.status, METRIC_STATUS.unsupported);
+  assert.equal(parseClientCount('{"uptime":120}').client_count.value, null);
+
+  // Teks hilang/kosong dan JSON rusak.
+  assert.equal(parseClientCount(undefined).client_count.code, ERROR_CODE.missing);
+  assert.equal(parseClientCount('').client_count.code, ERROR_CODE.missing);
+  assert.equal(parseClientCount('bukan json').client_count.code, ERROR_CODE.not_numeric);
+  assert.equal(parseClientCount('bukan json').client_count.value, null);
+  assert.equal(parseClientCount('{"vap_table":[{"num_sta":2},').client_count.code, ERROR_CODE.not_numeric);
+
+  // num_sta negatif/bukan angka tidak dijumlahkan.
+  assert.equal(parseClientCount('{"vap_table":[{"num_sta":-1}]}').client_count.code, ERROR_CODE.not_numeric);
+  assert.equal(parseClientCount('{"vap_table":[{"num_sta":"3"}]}').client_count.code, ERROR_CODE.not_numeric);
+  assert.equal(parseClientCount('{"vap_table":[{"num_sta":2},{"num_sta":-1}]}').client_count.value, null);
+});
+
+test('normalizeSystemSample menyertakan client_count tanpa mengubah collection_status', () => {
+  const outputs = {
+    uptime: fixture('uptime.txt'),
+    loadavg: fixture('loadavg.txt'),
+    meminfo: fixture('meminfo.txt'),
+  };
+
+  const sample = normalizeSystemSample({
+    deviceId: 1,
+    observedAt: OBSERVED_AT,
+    receivedAt: RECEIVED_AT,
+    outputs: { ...outputs, mcaDump: '{"vap_table":[{"num_sta":4},{"num_sta":1}]}' },
+  });
+  assert.equal(sample.client_count, 5);
+  assert.equal(sample.metric_status.client_count.status, METRIC_STATUS.ok);
+  assert.equal(sample.collection_status, 'ok');
+
+  // Vendor tanpa mca-dump: client_count null, sampel uptime/load/RAM tetap ok.
+  const tanpaDukungan = normalizeSystemSample({ deviceId: 1, observedAt: OBSERVED_AT, outputs });
+  assert.equal(tanpaDukungan.client_count, null);
+  assert.equal(tanpaDukungan.metric_status.client_count.status, METRIC_STATUS.invalid);
+  assert.equal(tanpaDukungan.collection_status, 'ok');
+
+  // Output rusak: tetap null, bukan nol.
+  const rusak = normalizeSystemSample({ deviceId: 1, observedAt: OBSERVED_AT, outputs: { ...outputs, mcaDump: 'bukan json' } });
+  assert.equal(rusak.client_count, null);
+  assert.equal(rusak.metric_status.client_count.code, ERROR_CODE.not_numeric);
 });

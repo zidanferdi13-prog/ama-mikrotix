@@ -103,6 +103,28 @@ export function parseMeminfo(text) {
   return result;
 }
 
+// `mca-dump` (UniFi): JSON dengan vap_table[].num_sta. Jumlah client = Σ num_sta.
+// JSON valid tanpa vap_table → unsupported (vendor lain), bukan nol.
+export function parseClientCount(text) {
+  if (typeof text !== 'string' || text.trim() === '') return { client_count: invalid(ERROR_CODE.missing) };
+  let data;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    return { client_count: invalid(ERROR_CODE.not_numeric) };
+  }
+  if (!Array.isArray(data?.vap_table)) return { client_count: unsupported() };
+  let total = 0;
+  for (const vap of data.vap_table) {
+    const n = vap?.num_sta;
+    if (typeof n !== 'number' || !Number.isFinite(n) || n < 0) {
+      return { client_count: invalid(ERROR_CODE.not_numeric) };
+    }
+    total += n;
+  }
+  return { client_count: ok(total) };
+}
+
 function statusesToCollectionStatus(statuses) {
   const values = Object.values(statuses);
   const anyOk = values.some((s) => s.status === METRIC_STATUS.ok);
@@ -112,12 +134,13 @@ function statusesToCollectionStatus(statuses) {
   return 'error';
 }
 
-// Gabungkan tiga keluaran jadi satu sampel sistem yang tervalidasi.
-// outputs: { uptime, loadavg, meminfo } — string mentah atau undefined bila gagal ambil.
+// Gabungkan keluaran perintah jadi satu sampel sistem yang tervalidasi.
+// outputs: { uptime, loadavg, meminfo, mcaDump } — string mentah atau undefined bila gagal ambil.
 export function normalizeSystemSample({ deviceId, observedAt, outputs = {}, receivedAt }) {
   const uptime = parseUptime(outputs.uptime);
   const load = parseLoadavg(outputs.loadavg);
   const mem = parseMeminfo(outputs.meminfo);
+  const clients = parseClientCount(outputs.mcaDump);
 
   const metricStatus = {
     uptime_seconds: uptime.uptime_seconds,
@@ -135,8 +158,10 @@ export function normalizeSystemSample({ deviceId, observedAt, outputs = {}, rece
     kind: 'system',
     observed_at: observedAt,
     received_at: receivedAt ?? new Date().toISOString(),
+    // client_count tidak ikut menentukan collection_status: AP non-UniFi tidak punya mca-dump,
+    // dan itu tidak boleh menurunkan sampel uptime/load/RAM yang sehat menjadi partial.
     collection_status: statusesToCollectionStatus(metricStatus),
-    metric_status: metricStatus,
+    metric_status: { ...metricStatus, client_count: clients.client_count },
     uptime_seconds: uptime.uptime_seconds.value,
     load_1: load.load_1.value,
     load_5: load.load_5.value,
@@ -145,6 +170,7 @@ export function normalizeSystemSample({ deviceId, observedAt, outputs = {}, rece
     memory_available_bytes: mem.memory_available_bytes.value,
     memory_used_bytes: mem.memory_used_bytes.value,
     memory_used_percent: mem.memory_used_percent.value,
+    client_count: clients.client_count.value,
   };
 }
 

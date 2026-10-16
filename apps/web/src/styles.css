@@ -641,6 +641,28 @@ select[aria-invalid='true'] {
   max-height: 60vh;
 }
 
+/* tabel client live (Detail): geser horizontal di layar sempit */
+.clients-wrap {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.clients-table {
+  min-width: 640px;
+}
+
+.clients-table td,
+.clients-table tbody th {
+  white-space: nowrap;
+  color: var(--text);
+}
+
+.clients-table tbody th {
+  max-width: 14rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 /* kartu metrik (halaman Detail) */
 
 .metric-grid {

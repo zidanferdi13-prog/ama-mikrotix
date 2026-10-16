@@ -5,6 +5,10 @@ metrik sistem (uptime, load, RAM) via SSH **read-only**. Daftar AP dikelola dari
 **Perangkat** di dashboard (tabel `devices`), bukan dari berkas konfigurasi. Hasil disimpan di MariaDB,
 disajikan lewat Express REST + Socket.IO, dan ditampilkan di dashboard React.
 
+Jumlah client Wi-Fi yang terhubung ikut dikoleksi (perintah tetap `mca-dump`, hanya angkanya
+yang disimpan). Daftar client (MAC/hostname/IP) hanya dibaca **live** saat diminta dari halaman
+Detail dan tidak pernah masuk database.
+
 Spesifikasi sumber ada di `docs/konsep-mvp.md`. Dokumen itu tidak boleh diubah.
 
 ## Prinsip yang dikunci

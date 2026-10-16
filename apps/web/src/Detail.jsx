@@ -199,8 +199,11 @@ export default function Detail({ id, onBack }) {
         <h3>Grafik {range.label} terakhir</h3>
         <Chart values={latencyPoints} label="Latency" unit="ms" height={200} />
         <Chart values={systemPoints('memory_used_percent')} label="RAM terpakai" unit="%" height={200} />
+        <Chart values={systemPoints('client_count')} label="Client terhubung" unit="client" height={200} digits={0} />
         <Chart values={systemPoints('load_1')} label="Load average 1 menit" height={200} digits={2} />
       </section>
+
+      <ClientsCard key={id} id={id} />
 
       <section className="card">
         <h3>Kesegaran per metrik</h3>
@@ -295,6 +298,130 @@ export default function Detail({ id, onBack }) {
       </section>
     </div>
   );
+}
+
+// Pesan ramah untuk kode error /clients; detail internal tidak ditampilkan.
+const CLIENT_ERRORS = {
+  timeout: 'AP tidak menjawab (timeout).',
+  connect_failed: 'AP tidak menjawab (timeout).',
+  auth_failed: 'Login SSH AP ditolak.',
+  host_key_unpinned: 'Fingerprint AP belum dipercaya. Ambil ulang lewat halaman Perangkat.',
+  host_key_changed: 'Fingerprint AP belum dipercaya. Ambil ulang lewat halaman Perangkat.',
+  parse_failed: 'Keluaran AP tidak bisa dibaca.',
+};
+
+function clientError(err) {
+  if (err.status === 409 && err.code === 'no_secret') {
+    return 'AP ini belum punya password tersimpan. Isi lewat halaman Perangkat.';
+  }
+  if (err.status === 404) return 'Perangkat tidak ditemukan.';
+  return CLIENT_ERRORS[err.reason] ?? 'Gagal memuat daftar client.';
+}
+
+// Daftar client live: hanya diambil saat tombol ditekan, tanpa polling.
+function ClientsCard({ id }) {
+  const [data, setData] = useState(null);
+  const [error, setError] = useState(null);
+  const [busy, setBusy] = useState(false);
+
+  const load = () => {
+    setBusy(true);
+    setError(null);
+    api
+      .clients(id)
+      .then((res) => setData(res))
+      .catch((err) => {
+        if (err.status !== 401) setError(clientError(err));
+      })
+      .finally(() => setBusy(false));
+  };
+
+  const clients = data?.clients ?? [];
+
+  return (
+    <section className="card stack" aria-labelledby="clients-title">
+      <div className="ap-card-head">
+        <h3 id="clients-title">Client terhubung (live)</h3>
+        <button type="button" className="btn btn-sm" onClick={load} aria-busy={busy}>
+          {data || error ? 'Muat ulang daftar client' : 'Muat daftar client'}
+        </button>
+      </div>
+      <p>
+        <strong>Data live dari AP, tidak disimpan di database.</strong>
+      </p>
+      <div role="status" aria-live="polite">
+        {busy && <p>Memuat…</p>}
+        {error && <div className="banner banner-error">Gagal: {error}</div>}
+      </div>
+      {data && (
+        <>
+          <p className="sub">
+            Diamati {formatTime(data.observed_at)} · {data.total ?? clients.length} client
+          </p>
+          {data.truncated && (
+            <div className="banner banner-warn" role="note">
+              Peringatan: menampilkan {clients.length} dari {data.total} client.
+            </div>
+          )}
+          {clients.length === 0 ? (
+            <p>Tidak ada client yang terhubung.</p>
+          ) : (
+            <div className="table-wrap clients-wrap">
+              <table className="table small clients-table">
+                <caption className="sr-only">Daftar client Wi-Fi yang terhubung ke AP saat ini</caption>
+                <thead>
+                  <tr>
+                    <th scope="col">Nama</th>
+                    <th scope="col">IP</th>
+                    <th scope="col">MAC</th>
+                    <th scope="col">Sinyal</th>
+                    <th scope="col">Radio/VAP</th>
+                    <th scope="col">RX/TX</th>
+                    <th scope="col">Terhubung</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {clients.map((c, i) => (
+                    <tr key={c.mac ?? i}>
+                      <th scope="row">{c.hostname || '—'}</th>
+                      <td className="mono">{c.ip ?? '—'}</td>
+                      <td className="mono">{c.mac ?? '—'}</td>
+                      <td className="num">
+                        {c.signal == null ? '—' : `${c.signal} dBm`}
+                        {c.rssi != null && <span className="sub"> (RSSI {c.rssi})</span>}
+                      </td>
+                      <td>
+                        {c.radio ?? '—'}
+                        {c.ssid ? <span className="sub"> · {c.ssid}</span> : null}
+                      </td>
+                      <td className="num">
+                        {formatBytes(c.rx_bytes)} / {formatBytes(c.tx_bytes)}
+                      </td>
+                      <td className="num">{formatUptime(c.uptime_s)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </>
+      )}
+    </section>
+  );
+}
+
+// Byte → teks ringkas (basis 1024); null → em dash.
+function formatBytes(value) {
+  const n = Number(value);
+  if (value === null || value === undefined || !Number.isFinite(n) || n < 0) return '—';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let i = 0;
+  let v = n;
+  while (v >= 1024 && i < units.length - 1) {
+    v /= 1024;
+    i += 1;
+  }
+  return `${v.toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
 }
 
 function MetricCard({ label, value, freshness, hint }) {

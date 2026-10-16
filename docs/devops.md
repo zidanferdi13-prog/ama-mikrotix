@@ -276,6 +276,16 @@ Diputuskan saat pengelolaan perangkat dipindah ke dashboard (2026-10):
   nonaktifkan (`enabled=0`), supaya tidak ada data monitoring hilang karena salah klik.
 - **Akun aplikasi mendapat `DELETE`** (`provision-host.sh`) — dibutuhkan fitur hapus.
 
+Diputuskan saat menambah data client Wi-Fi (2026-10; untuk AP UniFi, penundaan §1/§7 konsep-mvp dicabut atas permintaan pemilik):
+
+- **Sumber** — `mca-dump` di AP UniFi (BZ 6.x), dibaca lewat SSH yang sama (host key diverifikasi).
+  Vendor tanpa `mca-dump` → `client_count` berstatus `unsupported`, bukan nol.
+- **Jumlah client disimpan** — kolom `device_metrics.client_count` (migrasi `004`), grafik
+  "Client terhubung" di Detail. Hanya angka, tanpa identitas.
+- **Daftar client hanya live** — `GET /api/devices/:id/clients` SSH ke AP saat tombol ditekan;
+  MAC/hostname/IP client **tidak disimpan** (data pribadi). Tidak ada tabel `wifi_clients`;
+  histori "siapa terhubung kapan" butuh kebijakan retensi/privasi tersendiri.
+
 Masih terbuka:
 
 - **Retensi histori** — belum ada penghapusan otomatis; jangan aktifkan tanpa persetujuan.

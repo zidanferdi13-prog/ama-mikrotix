@@ -320,7 +320,7 @@ export async function getMetrics(pool, id, range, kind) {
   const params = [id, sqlTime(range.from), sqlTime(range.to)];
   let sql = `SELECT observed_at, kind, collection_status, reachable, latency_ms,
                     uptime_seconds, load_1, load_5, load_15,
-                    memory_used_bytes, memory_used_percent, metric_status
+                    memory_used_bytes, memory_used_percent, client_count, metric_status
              FROM device_metrics
              WHERE device_id = ? AND observed_at BETWEEN ? AND ?`;
   if (kind) {

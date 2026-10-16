@@ -5,6 +5,8 @@ import { createServer } from 'node:http';
 import { Server } from 'socket.io';
 import { createPool } from '@ama/db';
 import { createApp } from './app.js';
+import { probeHostKey } from './ssh-probe.js';
+import { listClients } from './ssh-clients.js';
 import { authenticateSocket } from './auth.js';
 import { startEventPoller, emitterFor } from './realtime.js';
 
@@ -12,7 +14,7 @@ const PORT = Number(process.env.AMA_PORT ?? 3001);
 const allowedOrigin = process.env.AMA_WEB_ORIGIN ?? 'http://localhost:5173';
 
 const pool = createPool();
-const app = createApp({ pool, allowedOrigin });
+const app = createApp({ pool, allowedOrigin, probe: probeHostKey, clients: listClients });
 const httpServer = createServer(app);
 
 const io = new Server(httpServer, {
