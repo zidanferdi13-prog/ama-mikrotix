@@ -88,6 +88,32 @@ UNIT
 write_unit ama-server.service "AMA monitoring REST + Socket.IO" "apps/server/src/index.js"
 write_unit ama-collector.service "AMA monitoring collector (ping + SSH)" "apps/collector/src/main.js"
 
+# --- 5b. backup harian: root via socket (tanpa password), simpan 7 dump terakhir ---
+install -d -m 700 /var/backups/ama
+cat > /etc/systemd/system/ama-backup.service <<'UNIT'
+[Unit]
+Description=AMA monitoring: dump database harian
+Requires=mariadb.service
+After=mariadb.service
+
+[Service]
+Type=oneshot
+UMask=0077
+# Tulis ke .part lalu rename: dump gagal tidak pernah tampak seperti backup sah.
+ExecStart=/bin/bash -c 'set -euo pipefail; f=/var/backups/ama/ama-$(date +%%F).sql.gz; mariadb-dump --single-transaction --routines ama_monitoring | gzip > "$f.part"; mv "$f.part" "$f"; ls -1t /var/backups/ama/ama-*.sql.gz | tail -n +8 | xargs -r rm -f'
+UNIT
+cat > /etc/systemd/system/ama-backup.timer <<'UNIT'
+[Unit]
+Description=AMA monitoring: jadwal dump database harian
+
+[Timer]
+OnCalendar=*-*-* 02:30:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+UNIT
+
 # --- 6. nginx: satu origin untuk dashboard + /api + /socket.io ---
 cat > /etc/nginx/sites-available/ama-mikrotix.conf <<NGINX
 server {
@@ -123,7 +149,7 @@ systemctl enable --now nginx
 systemctl reload nginx
 
 systemctl daemon-reload
-systemctl enable --now ama-server ama-collector
+systemctl enable --now ama-server ama-collector ama-backup.timer
 
 echo
 echo "selesai. langkah berikut:"

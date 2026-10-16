@@ -268,17 +268,32 @@ Penting: collector mati berarti data **stale**. Jangan tampilkan itu sebagai "se
 
 ## 11. Backup
 
-Disarankan sebelum uji operasional berkelanjutan. Contoh dump harian:
+Backup berjalan otomatis: `ama-backup.timer` memicu `ama-backup.service` setiap hari 02:30 waktu
+lokal (`Persistent=true`, jadi jadwal yang terlewat saat host mati ikut dijalankan), dan menyimpan
+7 dump terakhir.
+
+- Lokasi `/var/backups/ama/ama-YYYY-MM-DD.sql.gz`: direktori `700`, file `600`, milik root.
+- Isi: seluruh database `ama_monitoring` lewat `mariadb-dump --single-transaction --routines`,
+  jadi tulis baca tetap jalan dan tabel `alerts`, `alert_events`, serta snapshot client
+  (`client_observations`) ikut tanpa langkah tambahan.
+- Tanpa password di file: unit berjalan sebagai root dan memakai socket Unix MariaDB.
+- Dump ditulis ke `.part` lalu di-rename, jadi dump yang gagal tidak tampak seperti backup sah.
+- Cek: `systemctl list-timers ama-backup.timer`, `journalctl -u ama-backup.service`,
+  `sudo gzip -t /var/backups/ama/*.sql.gz`.
+
+Uji restore — sudah dijalankan 2026-10-16 pada host ini; jumlah baris `devices`, `alerts`,
+`alert_events`, dan `alerts` yang masih terbuka cocok dengan produksi:
 
 ```bash
-sudo mysqldump --single-transaction ama_monitoring | gzip > /var/backups/ama-$(date +%F).sql.gz
+sudo mysql --protocol=socket -uroot -e "CREATE DATABASE ama_restore_test"
+sudo zcat /var/backups/ama/ama-<tanggal>.sql.gz | sudo mysql --protocol=socket -uroot ama_restore_test
+sudo mysql --protocol=socket -uroot -e "SELECT COUNT(*) FROM ama_restore_test.alerts"
+sudo mysql --protocol=socket -uroot -e "DROP DATABASE ama_restore_test"
 ```
 
-Simpan di luar host aplikasi, batasi akses file, dan uji restore secara berkala.
-Jangan campur backup dengan file `.env`/rahasia dalam satu arsip tanpa enkripsi.
-
-Dump itu sudah mencakup tabel alert (`alerts`, `alert_events`) dan snapshot client 24 jam
-terakhir (`client_observations`) karena semuanya di database yang sama — tidak ada langkah tambahan.
+Yang belum ada: salinan di luar host ini (dump masih satu disk dengan database), dan uji restore
+belum dijadwalkan berkala. Batasi akses file, dan jangan campur backup dengan `.env`/rahasia dalam
+satu arsip tanpa enkripsi.
 
 ## 12. Keputusan deploy
 
@@ -358,4 +373,5 @@ Diputuskan saat menambah alert proaktif & insiden (2026-10):
 Masih terbuka:
 
 - **Retensi `monitoring_events`** — belum dihapus otomatis (baris sedikit: hanya transisi status).
-- **Jadwal backup & uji restore** — baru contoh manual (§11), belum dijadwalkan.
+- **Backup di luar host & uji restore berkala** — dump harian sudah terjadwal (§11), tapi masih
+  tersimpan di disk yang sama dan belum ada jadwal uji restore.
