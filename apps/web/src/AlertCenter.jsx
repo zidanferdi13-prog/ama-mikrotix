@@ -410,7 +410,8 @@ export default function AlertCenter({ devices, refreshKey, alertEvent, onSelectD
               {diagnosis.scenario && (
                 <p>
                   <strong>Korelasi skenario {diagnosis.scenario}</strong> · keyakinan{' '}
-                  {diagnosis.confidence ?? '—'} ({diagnosis.confidence_rule})
+                  {diagnosis.confidence ?? '—'}
+                  {diagnosis.confidence_rule ? ` (${diagnosis.confidence_rule})` : ''}
                 </p>
               )}
               <List title="Bukti yang ada" items={diagnosis.evidence_present} />

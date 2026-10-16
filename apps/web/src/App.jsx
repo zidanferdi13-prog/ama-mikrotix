@@ -15,6 +15,7 @@ export default function App() {
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(true);
   const [realtime, setRealtime] = useState('connecting');
+  const [refreshKey, setRefreshKey] = useState(0);
   const [alertEvent, setAlertEvent] = useState(null);
 
   useEffect(() => {

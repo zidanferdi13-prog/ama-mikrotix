@@ -5,6 +5,7 @@ import {
   listDevices,
   getDevice,
   getMetrics,
+  listAlerts,
   listAlertCenter,
   alertSummary,
   getAlert,

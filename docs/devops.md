@@ -143,6 +143,10 @@ Nginx (user `www-data`) tidak dapat menembus `~ama-i` yang bermode `700`. Karena
 provision menyalin `apps/web/dist` ke `/srv/ama-mikrotix/apps/web/dist`, dan nginx melayani
 salinan itu — jalankan ulang skrip setelah setiap build.
 
+Setelah salinan ini diterbitkan, **buka dashboard di browser** dan pastikan halaman login/ringkasan
+benar-benar tampil. Build tidak melakukan pemeriksaan tipe, jadi identifier yang salah (mis.
+variabel state yang terhapus) hanya muncul sebagai layar kosong di browser, bukan sebagai error build.
+
 ## 7. Jalankan proses
 
 Jalankan dari root repo (`.env` dimuat otomatis lewat `--env-file-if-exists`):

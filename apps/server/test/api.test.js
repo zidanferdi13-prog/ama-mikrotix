@@ -80,6 +80,24 @@ test('login benar → cookie HttpOnly, lalu akses endpoint berhasil', async () =
   });
 });
 
+test('daftar alert lama (dipakai Ringkasan) tetap melayani dan menolak limit tidak valid', async () => {
+  await withServer(async (base) => {
+    const login = await fetch(`${base}/api/auth/login`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ username: 'operator', password: 'rahasia' }),
+    });
+    const cookie = getSetCookie(login).find((c) => c.startsWith('ama_session=')).split(';')[0];
+
+    const res = await fetch(`${base}/api/alerts?limit=5`, { headers: { cookie } });
+    assert.equal(res.status, 200);
+    assert.deepEqual(await res.json(), { alerts: [] });
+
+    const bad = await fetch(`${base}/api/alerts?limit=0`, { headers: { cookie } });
+    assert.equal(bad.status, 400);
+  });
+});
+
 test('id tidak ditemukan → 404; id salah format → 400', async () => {
   await withServer(async (base) => {
     const login = await fetch(`${base}/api/auth/login`, {
