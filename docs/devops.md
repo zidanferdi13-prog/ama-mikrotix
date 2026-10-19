@@ -179,10 +179,10 @@ Konfigurasi dipasang oleh `scripts/provision-host.sh` ke
 `/etc/nginx/sites-available/ama-mikrotix.conf`: listen 80 (tanpa TLS, LAN saja), root
 `/srv/ama-mikrotix/apps/web/dist`, proxy `/api/` dan `/socket.io/` ke `127.0.0.1:3001`.
 
-Firewall host (`ufw`, default menolak masuk) hanya membuka port 80 untuk LAN:
-`sudo ufw allow from 192.168.0.0/24 to any port 80 proto tcp comment 'AMA dashboard LAN'`.
-Akses lewat Tailscale (`100.x`) sudah diizinkan oleh Tailscale sendiri. Jangan buka 80 untuk
-`Anywhere`: dashboard tanpa TLS.
+Firewall host (`ufw`, default menolak masuk) membuka port 80 untuk semua sumber:
+`sudo ufw allow 80/tcp`. Keputusan 2026-10-19: host hanya ada di WiFi internal, jadi yang bisa
+menjangkau hanya perangkat satu segmen (plus peer Tailscale). Dashboard tanpa TLS: jangan
+forward port 80 dari router ke internet.
 Versi dengan HTTPS:
 
 ```nginx
