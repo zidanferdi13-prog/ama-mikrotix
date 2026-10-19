@@ -234,15 +234,16 @@ export async function deleteDevice(pool, id) {
   return Number(result.affectedRows ?? 0);
 }
 
-// Histori apa pun (metrik atau event) membuat penghapusan ditolak.
+// Histori apa pun (metrik, event, atau aksi kontrol) membuat penghapusan ditolak.
 export async function deviceHasHistory(pool, id) {
   const rows = await pool.query(
     `SELECT (SELECT COUNT(*) FROM device_metrics WHERE device_id = ?) AS metrics,
-            (SELECT COUNT(*) FROM monitoring_events WHERE device_id = ?) AS events`,
-    [id, id],
+            (SELECT COUNT(*) FROM monitoring_events WHERE device_id = ?) AS events,
+            (SELECT COUNT(*) FROM device_actions WHERE device_id = ?) AS actions`,
+    [id, id, id],
   );
   const row = rows[0] ?? {};
-  return Number(row.metrics ?? 0) > 0 || Number(row.events ?? 0) > 0;
+  return Number(row.metrics ?? 0) > 0 || Number(row.events ?? 0) > 0 || Number(row.actions ?? 0) > 0;
 }
 
 // Rentang tervalidasi: default 1 jam, maksimum 24 jam.
@@ -667,4 +668,38 @@ export function ackAlert(pool, { id, user, at = new Date() }) {
 
 export function resolveAlert(pool, { id, user, at = new Date() }) {
   return setAlertStatus(pool, { id, user, status: 'resolved', at });
+}
+
+// --- Aksi kontrol AP (migrasi 007) ---------------------------------------------
+
+export async function insertDeviceAction(pool, { deviceId, action, user, status, errorCode = null, at = new Date() }) {
+  await pool.query(
+    'INSERT INTO device_actions (device_id, action, requested_by, requested_at, status, error_code) VALUES (?,?,?,?,?,?)',
+    [deviceId, action, user, at, status, errorCode],
+  );
+}
+
+// Waktu aksi terkirim terakhir (untuk cooldown); aksi gagal tidak dihitung.
+export async function lastSentActionAt(pool, deviceId, action) {
+  const rows = await pool.query(
+    "SELECT MAX(requested_at) AS at FROM device_actions WHERE device_id = ? AND action = ? AND status = 'sent'",
+    [deviceId, action],
+  );
+  return isoOrNull(rows[0]?.at);
+}
+
+export async function listDeviceActions(pool, deviceId, limit = 20) {
+  const rows = await pool.query(
+    `SELECT id, action, requested_by, requested_at, status, error_code
+     FROM device_actions WHERE device_id = ? ORDER BY requested_at DESC, id DESC LIMIT ?`,
+    [deviceId, limit],
+  );
+  return rows.map((row) => ({
+    id: Number(row.id),
+    action: row.action,
+    requested_by: row.requested_by,
+    requested_at: isoOrNull(row.requested_at),
+    status: row.status,
+    error_code: row.error_code ?? null,
+  }));
 }

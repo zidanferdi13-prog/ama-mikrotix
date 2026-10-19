@@ -18,6 +18,7 @@ process.env.AMA_SECRETS_FILE = SECRETS_FILE;
 const { createApp } = await import('../src/app.js');
 const { probeHostKey } = await import('../src/ssh-probe.js');
 const { listClients } = await import('../src/ssh-clients.js');
+const { runDeviceAction } = await import('../src/ssh-action.js');
 
 function writeSecrets(data) {
   writeFileSync(SECRETS_FILE, `${JSON.stringify(data, null, 2)}\n`, { mode: 0o600 });
@@ -31,6 +32,7 @@ function readSecrets() {
 function createStubPool() {
   const devices = [];
   const history = new Set();
+  const actions = [];
   const state = { seriesValue: null };
   let nextId = 1;
 
@@ -65,6 +67,7 @@ function createStubPool() {
   return {
     devices,
     history,
+    actions,
     state,
     addDevice,
     query: async (sql, params = []) => {
@@ -113,7 +116,23 @@ function createStubPool() {
         return { affectedRows: 1 };
       }
       if (/SELECT \(SELECT COUNT\(\*\) FROM device_metrics/.test(sql)) {
-        return [{ metrics: history.has(Number(params[0])) ? 3 : 0, events: 0 }];
+        const metrics = history.has(Number(params[0])) ? 3 : 0;
+        return [{ metrics, events: 0, actions: actions.filter((a) => a.device_id === Number(params[0])).length }];
+      }
+      if (/INSERT INTO device_actions/.test(sql)) {
+        const [device_id, action, requested_by, requested_at, status, error_code] = params;
+        actions.push({ id: actions.length + 1, device_id, action, requested_by, requested_at, status, error_code });
+        return { insertId: actions.length, affectedRows: 1 };
+      }
+      if (/SELECT MAX\(requested_at\)/.test(sql)) {
+        const sent = actions.filter((a) => a.device_id === Number(params[0]) && a.action === params[1] && a.status === 'sent');
+        return [{ at: sent.length ? sent.at(-1).requested_at : null }];
+      }
+      if (/FROM device_actions WHERE device_id = \?/.test(sql)) {
+        return actions
+          .filter((a) => a.device_id === Number(params[0]))
+          .sort((a, b) => b.id - a.id)
+          .slice(0, Number(params[1]));
       }
       if (/FLOOR\(UNIX_TIMESTAMP/.test(sql)) {
         // Satu titik contoh di bucket pertama, bila uji menyemainya.
@@ -685,4 +704,165 @@ test('listClients: host key wajib cocok, pemetaan mca-dump, batas 200, koneksi s
   const timeout = await run(hanging, { hostKeyFingerprint: pinned }, { timeoutMs: 20 });
   assert.deepEqual(timeout, { ok: false, code: 'timeout' });
   assert.equal(hanging.closed, 2);
+});
+
+test('POST /api/devices/:id/actions: gate, konfirmasi nama, rahasia, cooldown, audit, 502', async () => {
+  const store = createStubPool();
+  const pinned = `sha256:${'D'.repeat(43)}=`;
+  const device = store.addDevice({ name: 'AP-R', ip: '192.168.5.229', username: 'monitor', host_key_fingerprint: pinned });
+  const tanpaRahasia = store.addDevice({ name: 'AP-X', ip: '192.168.5.230' });
+  writeSecrets({ [device.id]: 'rahasiaReboot' });
+  const calls = [];
+  const reboot = (overrides = {}) => call(overrides.base, overrides.cookie, `/api/devices/${overrides.id ?? device.id}/actions`, {
+    method: 'POST',
+    body: { action: 'reboot', confirm: 'AP-R', ...overrides.body },
+  });
+
+  const previous = process.env.AMA_CONTROL_ENABLED;
+  try {
+    delete process.env.AMA_CONTROL_ENABLED;
+    await withServer(store, async (base) => {
+      const unauth = await fetch(`${base}/api/devices/${device.id}/actions`, { method: 'POST' });
+      assert.equal(unauth.status, 401);
+      const cookie = await login(base);
+      const disabled = await reboot({ base, cookie });
+      assert.equal(disabled.status, 403);
+      assert.deepEqual(await disabled.json(), { error: 'control_disabled' });
+      const history = await call(base, cookie, `/api/devices/${device.id}/actions`);
+      assert.deepEqual(await history.json(), { control_enabled: false, actions: [] });
+    });
+    assert.equal(calls.length, 0);
+
+    process.env.AMA_CONTROL_ENABLED = 'true';
+    await withServer(store, async (base) => {
+      const cookie = await login(base);
+      assert.equal((await reboot({ base, cookie, id: 'abc' })).status, 400);
+      const unknown = await reboot({ base, cookie, body: { action: 'rm -rf /' } });
+      assert.equal(unknown.status, 400);
+      assert.deepEqual((await unknown.json()).fields, { action: 'unknown_action' });
+      assert.equal((await reboot({ base, cookie, id: 999 })).status, 404);
+
+      const mismatch = await reboot({ base, cookie, body: { confirm: 'ap-r' } });
+      assert.equal(mismatch.status, 400);
+      assert.deepEqual((await mismatch.json()).fields, { confirm: 'confirm_mismatch' });
+
+      const noSecret = await reboot({ base, cookie, id: tanpaRahasia.id, body: { confirm: 'AP-X' } });
+      assert.equal(noSecret.status, 409);
+      assert.equal(calls.length, 0, 'SSH tidak disentuh sebelum semua cek lolos');
+
+      // Gagal tidak memicu cooldown; tercatat sebagai failed.
+      const failed = await reboot({ base, cookie, body: { confirm: 'AP-R' } });
+      assert.equal(failed.status, 502);
+      assert.deepEqual(await failed.json(), { error: 'action_failed', code: 'auth_failed' });
+
+      const ok = await reboot({ base, cookie });
+      assert.equal(ok.status, 200);
+      const body = await ok.json();
+      assert.equal(body.status, 'sent');
+      assertNoSecret(body, 'rahasiaReboot');
+      assert.deepEqual(calls.at(-1), [
+        { ip: '192.168.5.229', port: 22, username: 'monitor', password: 'rahasiaReboot', hostKeyFingerprint: pinned },
+        'reboot',
+      ]);
+
+      const again = await reboot({ base, cookie });
+      assert.equal(again.status, 429);
+      const cooldown = await again.json();
+      assert.equal(cooldown.error, 'cooldown');
+      assert.ok(Date.parse(cooldown.next_allowed_at) > Date.now() + 4 * 60 * 1000);
+      assert.equal(calls.length, 2);
+
+      const history = await (await call(base, cookie, `/api/devices/${device.id}/actions`)).json();
+      assert.equal(history.control_enabled, true);
+      assert.deepEqual(
+        history.actions.map((a) => [a.action, a.requested_by, a.status, a.error_code]),
+        [['reboot', 'operator', 'sent', null], ['reboot', 'operator', 'failed', 'auth_failed']],
+      );
+      assertNoSecret(history, 'rahasiaReboot');
+
+      // Aksi tercatat = histori: perangkat tidak boleh dihapus diam-diam.
+      const del = await call(base, cookie, `/api/devices/${device.id}`, { method: 'DELETE' });
+      assert.equal(del.status, 409);
+    }, {
+      action: async (args, name) => {
+        calls.push([args, name]);
+        return calls.length === 1 ? { ok: false, code: 'auth_failed' } : { ok: true };
+      },
+    });
+  } finally {
+    if (previous === undefined) delete process.env.AMA_CONTROL_ENABLED;
+    else process.env.AMA_CONTROL_ENABLED = previous;
+  }
+});
+
+test('runDeviceAction: whitelist, host key wajib cocok, putus setelah exec = terkirim, exit≠0 = gagal', async () => {
+  const hostKey = Buffer.from('host-key-bytes');
+  const pinned = `sha256:${createHash('sha256').update(hostKey).digest('base64')}`;
+  const auth = { ip: '192.168.5.229', username: 'monitor', password: 'rahasiaReboot', hostKeyFingerprint: pinned };
+
+  // after: 'drop' = koneksi putus tanpa exit (AP mulai reboot); angka = exit code lalu close.
+  function fakeClient({ after = 'drop', execError, fail } = {}) {
+    const client = new EventEmitter();
+    client.closed = 0;
+    client.commands = [];
+    client.end = () => { client.closed += 1; };
+    client.destroy = () => { client.closed += 1; };
+    client.connect = (config) => {
+      setImmediate(() => {
+        if (!config.hostVerifier(hostKey)) {
+          client.emit('error', Object.assign(new Error('host key ditolak'), { level: 'client-socket' }));
+          return;
+        }
+        if (fail) client.emit('error', Object.assign(new Error('gagal'), fail));
+        else client.emit('ready');
+      });
+    };
+    client.exec = (command, cb) => {
+      client.commands.push(command);
+      if (execError) return cb(new Error('exec gagal'));
+      const stream = new EventEmitter();
+      stream.stderr = new EventEmitter();
+      cb(null, stream);
+      setImmediate(() => {
+        if (after === 'drop') {
+          client.emit('error', new Error('ECONNRESET'));
+          client.emit('close');
+        } else {
+          stream.emit('exit', after);
+          stream.emit('close');
+        }
+      });
+      return undefined;
+    };
+    return client;
+  }
+  const run = (client, extra = {}, action = 'reboot') =>
+    runDeviceAction({ ...auth, ...extra }, action, { Client: function StubClient() { return client; }, graceMs: 50 });
+
+  const dropped = fakeClient();
+  assert.deepEqual(await run(dropped), { ok: true });
+  assert.deepEqual(dropped.commands, ['reboot']);
+  assert.equal(dropped.closed, 2);
+
+  assert.deepEqual(await run(fakeClient({ after: 0 })), { ok: true });
+
+  const cases = [
+    [{ after: 1 }, {}, 'exec_failed'],
+    [{ execError: true }, {}, 'exec_failed'],
+    [{}, { hostKeyFingerprint: null }, 'host_key_unpinned'],
+    [{}, { hostKeyFingerprint: `sha256:${'C'.repeat(43)}=` }, 'host_key_changed'],
+    [{ fail: { level: 'client-authentication' } }, {}, 'auth_failed'],
+  ];
+  for (const [opts, extra, code] of cases) {
+    const client = fakeClient(opts);
+    assert.deepEqual(await run(client, extra), { ok: false, code }, code);
+    assert.equal(client.closed, 2, `end + destroy (${code})`);
+    if (code.startsWith('host_key') || code === 'auth_failed') assert.deepEqual(client.commands, [], code);
+  }
+
+  // Aksi di luar whitelist tidak pernah membuka koneksi.
+  let constructed = 0;
+  const unknown = await runDeviceAction(auth, 'toString', { Client: function StubClient() { constructed += 1; } });
+  assert.deepEqual(unknown, { ok: false, code: 'unknown_action' });
+  assert.equal(constructed, 0);
 });

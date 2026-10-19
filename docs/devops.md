@@ -34,6 +34,7 @@ Tiga proses terpisah, satu database:
 collector  ──(ping + SSH read-only)──► MariaDB ──(baca)──► server (REST + Socket.IO) ──► browser (dashboard)
    │                                                        │
    └── heartbeat ──────────────────────────────────────────►└── /api/health
+server     ──(SSH aksi: reboot)──────► AP (host key diverifikasi, perintah whitelist)
 ```
 
 - `apps/collector` — daftar AP dibaca dari tabel `devices` (disegarkan tiap 15 s), ping 15 s
@@ -92,6 +93,11 @@ Rollback: kembalikan kode ke revisi sebelumnya lalu `sudo systemctl restart ama-
 ama-collector` — tabel baru diabaikan kode lama dan tidak perlu dihapus. Menghapus tabel itu
 **menghilangkan seluruh riwayat alert**, jadi lakukan hanya bila memang dikehendaki.
 
+Migrasi `007_device_actions.sql` (aditif, idempoten) menambah tabel audit `device_actions` untuk
+aksi kontrol AP (§12). Terapkan **sebelum** me-restart `ama-server`; bila belum diterapkan,
+riwayat/reboot dari dashboard **dan** hapus perangkat gagal `500` (SSH tidak pernah dibuka) —
+koleksi monitoring tidak terpengaruh.
+
 ## 5. Konfigurasi dan rahasia
 
 ```bash
@@ -106,6 +112,8 @@ jalankan `sudo systemctl restart ama-server ama-collector`:
 - `AMA_WEB_ORIGIN` = origin dashboard sebenarnya (mis. `https://monitor.internal`).
 - Bila di belakang HTTPS: `AMA_COOKIE_SECURE=true`.
 - `AMA_DEVICE_REFRESH_MS` (default `15000`) — jeda collector menyegarkan daftar AP dari DB.
+- `AMA_CONTROL_ENABLED` (default `false`) — `true` mengaktifkan aksi kontrol AP (`reboot`) dari
+  halaman Detail; lihat §12.
 
 Inventaris AP (nama, ip, port, username, vendor/model/firmware, catatan, aktif/nonaktif)
 ada di tabel `devices` dan diubah dari halaman **Perangkat**: tambah, ubah, nonaktifkan,
@@ -429,6 +437,36 @@ Diputuskan saat menambah kesehatan link ethernet & radio (2026-10-16):
   **sebelum** collector di-restart, karena `INSERT` metrik sistem memakai kolom baru. Setelah itu
   `ama-collector` + `ama-server` di-restart dan dashboard di-build ulang lalu disalin ke
   `/srv/ama-mikrotix/apps/web/dist`.
+
+Diputuskan saat menambah kontrol AP / reboot dari dashboard (2026-10-19, atas permintaan pemilik —
+penundaan §1 konsep-mvp "tidak ada reboot" dicabut untuk aksi `reboot` saja):
+
+- **Dijalankan server, bukan collector** — collector tetap read-only supaya siklus koleksi tidak
+  bergantung pada aksi operator. `apps/server/src/ssh-action.js` memakai pola sesaat yang sama
+  dengan `ssh-clients.js`: host key wajib cocok, rahasia hanya di memori, `conn.end()` +
+  `conn.destroy()` selalu dipanggil.
+- **Perintah dari whitelist tetap** — `ACTIONS = { reboot: 'reboot' }`; nama aksi tidak dikenal →
+  `400 invalid_payload`. Tidak ada string dari masukan pengguna yang masuk ke `exec`.
+- **Konfirmasi mengetik nama AP** — body wajib memuat `confirm` yang sama persis dengan
+  `devices.name`; salah → `400` dengan `fields.confirm = confirm_mismatch`. Tombol UI nonaktif
+  sampai cocok.
+- **Gate `AMA_CONTROL_ENABLED`** — tanpa `true`, endpoint mengembalikan `403 control_disabled`.
+  `GET /api/devices/:id/actions` melaporkan `control_enabled` supaya UI menyembunyikan tombol.
+  ponytail: masih satu akun operator tanpa role per aksi; tambahkan daftar pengguna + role bila
+  dashboard dipakai banyak orang.
+- **Cooldown 5 menit per AP** — dihitung dari aksi `sent` terakhir; pelanggaran → `429 cooldown`
+  + `next_allowed_at`. Percobaan gagal tidak mengunci.
+- **Status `sent`, bukan "AP sudah reboot"** — reboot memutus sesi SSH; perintah dianggap terkirim
+  bila `exec` diterima dan tidak ada exit status non-nol (non-nol → `exec_failed`). Bukti AP
+  benar-benar restart datang dari data: rule `ap.reboot` (uptime turun) dan `ap.unreachable`
+  sesaat. Kode gagal lain: `host_key_unpinned`, `host_key_changed`, `auth_failed`,
+  `connect_failed`, `timeout`.
+- **Audit `device_actions` (migrasi `007`)** — satu baris per percobaan yang mencapai SSH
+  (sukses maupun gagal): `requested_by`, `requested_at`, `status`, `error_code`, plus log
+  `device_action`. `deviceHasHistory` ikut menghitung tabel ini, jadi AP dengan riwayat aksi
+  tidak bisa dihapus. Tanpa retensi otomatis — audit sengaja disimpan.
+- **Efek samping yang wajar** — collector membuat alert `ap.reboot` (info) dan mungkin
+  `ap.unreachable` selama AP boot (±1–3 menit).
 
 Masih terbuka:
 

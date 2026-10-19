@@ -24,11 +24,15 @@ import {
   ipTaken,
   markSecretUpdated,
   clearSecretUpdated,
+  insertDeviceAction,
+  lastSentActionAt,
+  listDeviceActions,
 } from './queries.js';
 import { parseDeviceInput, parseProbeInput } from './device-input.js';
 import { hasSecret as hasStoredSecret, readAll as readSecrets, setSecret, removeSecret } from './secrets-file.js';
 import { probeHostKey } from './ssh-probe.js';
 import { listClients } from './ssh-clients.js';
+import { runDeviceAction, ACTIONS } from './ssh-action.js';
 import { log } from './logger.js';
 
 function isInt(value) {
@@ -44,7 +48,7 @@ function emptySeries(buckets) {
   return { latency: new Array(buckets).fill(null), ram: new Array(buckets).fill(null) };
 }
 
-export function createApp({ pool, allowedOrigin, probe = probeHostKey, clients = listClients }) {
+export function createApp({ pool, allowedOrigin, probe = probeHostKey, clients = listClients, action = runDeviceAction }) {
   const app = express();
   app.use(express.json({ limit: '64kb' }));
   app.use(cookieParser());
@@ -278,6 +282,76 @@ export function createApp({ pool, allowedOrigin, probe = probeHostKey, clients =
         truncated: result.truncated,
         clients: result.clients,
       });
+    } catch (err) {
+      return next(err);
+    }
+  });
+
+  // Aksi kontrol AP (reboot) lewat SSH sesaat. Perintah dari whitelist ACTIONS,
+  // tidak pernah dari masukan pengguna. ponytail: satu akun operator tanpa role
+  // per aksi; tambahkan daftar pengguna + role bila dashboard dipakai banyak orang.
+  const CONTROL_ENABLED = () => process.env.AMA_CONTROL_ENABLED === 'true';
+  const ACTION_COOLDOWN_MS = 5 * 60 * 1000;
+
+  app.get('/api/devices/:id/actions', requireAuth, async (req, res, next) => {
+    try {
+      if (!isInt(req.params.id)) return res.status(400).json({ error: 'invalid_id' });
+      const limit = req.query.limit ? Number(req.query.limit) : 20;
+      if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
+        return res.status(400).json({ error: 'invalid_limit' });
+      }
+      const id = Number(req.params.id);
+      if (!(await deviceExists(pool, id))) return res.status(404).json({ error: 'not_found' });
+      return res.json({ control_enabled: CONTROL_ENABLED(), actions: await listDeviceActions(pool, id, limit) });
+    } catch (err) {
+      return next(err);
+    }
+  });
+
+  // Konfirmasi wajib: body harus memuat nama perangkat persis seperti yang tampil di UI.
+  app.post('/api/devices/:id/actions', requireAuth, async (req, res, next) => {
+    try {
+      if (!isInt(req.params.id)) return res.status(400).json({ error: 'invalid_id' });
+      if (!CONTROL_ENABLED()) return res.status(403).json({ error: 'control_disabled' });
+
+      const { action: requested, confirm } = req.body ?? {};
+      if (typeof requested !== 'string' || !Object.hasOwn(ACTIONS, requested)) {
+        return res.status(400).json({ error: 'invalid_payload', fields: { action: 'unknown_action' } });
+      }
+
+      const id = Number(req.params.id);
+      const device = await getDevice(pool, id, hasStoredSecret);
+      if (!device) return res.status(404).json({ error: 'not_found' });
+      if (typeof confirm !== 'string' || confirm !== device.name) {
+        return res.status(400).json({ error: 'invalid_payload', fields: { confirm: 'confirm_mismatch' } });
+      }
+
+      const password = readSecrets()[String(id)];
+      if (typeof password !== 'string' || password === '') return res.status(409).json({ error: 'no_secret' });
+
+      const last = await lastSentActionAt(pool, id, requested);
+      const nextAllowed = last ? Date.parse(last) + ACTION_COOLDOWN_MS : 0;
+      if (last && Date.now() < nextAllowed) {
+        return res.status(429).json({ error: 'cooldown', next_allowed_at: new Date(nextAllowed).toISOString() });
+      }
+
+      const result = await action(
+        {
+          ip: device.ip,
+          port: device.port ?? 22,
+          username: device.username,
+          password,
+          hostKeyFingerprint: device.host_key_fingerprint,
+        },
+        requested,
+      );
+      const status = result.ok ? 'sent' : 'failed';
+      const at = new Date();
+      await insertDeviceAction(pool, { deviceId: id, action: requested, user: req.user, status, errorCode: result.code ?? null, at });
+      log.info({ event: 'device_action', deviceId: id, action: requested, user: req.user, status, code: result.code ?? null });
+
+      if (!result.ok) return res.status(502).json({ error: 'action_failed', code: result.code });
+      return res.json({ ok: true, action: requested, status, requested_at: at.toISOString() });
     } catch (err) {
       return next(err);
     }

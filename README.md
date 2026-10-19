@@ -1,7 +1,8 @@
 # Project Monitoring AP
 
 Dashboard internal untuk memantau access point (AP) yang terdaftar: keterjangkauan (ping) dan
-metrik sistem (uptime, load, RAM) via SSH **read-only**. Daftar AP dikelola dari halaman
+metrik sistem (uptime, load, RAM) via SSH. Koleksi tetap **read-only**; kontrol AP (saat ini
+hanya **reboot**) dijalankan server atas perintah operator, lihat bagian Kontrol AP. Daftar AP dikelola dari halaman
 **Perangkat** di dashboard (tabel `devices`), bukan dari berkas konfigurasi. Hasil disimpan di MariaDB,
 disajikan lewat Express REST + Socket.IO, dan ditampilkan di dashboard React.
 
@@ -13,7 +14,19 @@ Vendor, model, dan firmware AP diisi otomatis oleh collector dari laporan AP sen
 (`mca-dump`) pada sesi SSH yang host key-nya terverifikasi; kolom `identity_verified` menandai
 baris yang sudah terisi begitu. Nama AP tetap pilihan operator dan tidak pernah ditimpa.
 
-Spesifikasi sumber ada di `docs/konsep-mvp.md`. Dokumen itu tidak boleh diubah.
+Spesifikasi sumber ada di `docs/konsep-mvp.md`. Dokumen itu tidak boleh diubah; penambahan
+kontrol AP (di luar scope §1 spesifikasi) dicatat di README ini dan `docs/devops.md` §12.
+
+## Kontrol AP
+
+Halaman Detail punya kartu **Kontrol AP**: reboot dengan konfirmasi mengetik nama AP persis.
+
+- Aktif hanya bila `AMA_CONTROL_ENABLED=true` di `.env`; tanpa itu `POST /api/devices/:id/actions` → `403 control_disabled`.
+- Perintah dari whitelist tetap (`reboot`), tidak pernah dari masukan pengguna. Host key wajib cocok seperti koleksi.
+- Maksimal satu reboot terkirim per AP per 5 menit (`429 cooldown`).
+- Setiap percobaan dicatat di tabel `device_actions` (migrasi `007`): siapa, kapan, `sent`/`failed`, kode error.
+  AP yang punya riwayat aksi ikut ditolak dihapus (`409 device_has_history`).
+- Efek samping wajar: alert `ap.reboot` (uptime turun) dan `ap.unreachable` sesaat selama AP boot.
 
 ## Prinsip yang dikunci
 
@@ -38,7 +51,7 @@ Spesifikasi sumber ada di `docs/konsep-mvp.md`. Dokumen itu tidak boleh diubah.
 
 ```
 apps/collector   # ping + SSH read-only, penjadwal, persist ke MariaDB
-apps/server      # REST API + Socket.IO + auth JWT (HttpOnly cookie)
+apps/server      # REST API + Socket.IO + auth JWT (HttpOnly cookie) + aksi kontrol AP via SSH
 apps/web         # dashboard React (Vite)
 packages/shared  # parser murni, konstanta, transisi, kontrak, rule alert + parser client
 packages/db      # pool MariaDB + helper health

@@ -241,6 +241,8 @@ export default function Detail({ id, onBack }) {
         </div>
       </section>
 
+      <ControlCard device={device} />
+
       <ClientsCard key={id} id={id} />
 
       <section className="card">
@@ -402,6 +404,121 @@ function DeviceAlertsCard({ id }) {
             </li>
           ))}
         </ul>
+      )}
+    </section>
+  );
+}
+
+// Pesan ramah untuk aksi kontrol (reboot); kode SSH memakai CLIENT_ERRORS yang sama.
+function controlError(err) {
+  if (err.code === 'control_disabled') return 'Kontrol AP dimatikan di server (AMA_CONTROL_ENABLED).';
+  if (err.code === 'no_secret') return 'AP ini belum punya password tersimpan. Isi lewat halaman Perangkat.';
+  if (err.code === 'cooldown') return `Reboot baru saja dikirim. Coba lagi setelah ${formatTime(err.body?.next_allowed_at)}.`;
+  if (err.fields?.confirm) return 'Nama konfirmasi tidak cocok.';
+  if (err.status === 404) return 'Perangkat tidak ditemukan.';
+  if (err.reason === 'exec_failed') return 'AP menolak perintah reboot (cek hak akses akun SSH).';
+  return CLIENT_ERRORS[err.reason] ?? 'Gagal mengirim perintah.';
+}
+
+// Kontrol AP: reboot dengan konfirmasi mengetik nama AP + riwayat aksi (audit).
+function ControlCard({ device }) {
+  const [data, setData] = useState(null);
+  const [confirm, setConfirm] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+  const [notice, setNotice] = useState(null);
+
+  const load = () =>
+    api
+      .deviceActions(device.id)
+      .then(setData)
+      .catch((err) => {
+        if (err.status !== 401) setError('Gagal memuat riwayat aksi.');
+      });
+
+  useEffect(() => {
+    load();
+  }, [device.id]);
+
+  const reboot = (event) => {
+    event.preventDefault();
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    api
+      .rebootDevice(device.id, confirm)
+      .then(() => {
+        setConfirm('');
+        setNotice('Perintah reboot terkirim. AP akan offline sekitar 1–3 menit.');
+      })
+      .catch((err) => {
+        if (err.status !== 401) setError(controlError(err));
+      })
+      .finally(() => {
+        setBusy(false);
+        load();
+      });
+  };
+
+  const enabled = data?.control_enabled ?? false;
+  const actions = data?.actions ?? [];
+  const matches = confirm === device.name;
+
+  return (
+    <section className="card stack" aria-labelledby="control-title">
+      <h3 id="control-title">Kontrol AP</h3>
+      {data && !enabled && <p className="sub">Kontrol dimatikan di server (AMA_CONTROL_ENABLED).</p>}
+      {enabled && (
+        <form className="stack" onSubmit={reboot}>
+          <p className="sub">
+            Reboot memutus Wi-Fi semua client di AP ini. Ketik <strong className="mono">{device.name}</strong> untuk
+            konfirmasi.
+          </p>
+          <div className="field">
+            <label htmlFor="control-confirm">Nama AP</label>
+            <input
+              id="control-confirm"
+              value={confirm}
+              onChange={(e) => setConfirm(e.target.value)}
+              autoComplete="off"
+              disabled={busy}
+            />
+          </div>
+          <div className="row-actions">
+            <button type="submit" className="btn btn-sm btn-danger" disabled={busy || !matches} aria-busy={busy}>
+              {busy ? 'Mengirim…' : 'Reboot AP'}
+            </button>
+          </div>
+        </form>
+      )}
+      <div role="status" aria-live="polite">
+        {notice && <div className="banner banner-ok">{notice}</div>}
+        {error && <div className="banner banner-error">Gagal: {error}</div>}
+      </div>
+      {actions.length > 0 && (
+        <div className="table-wrap">
+          <table className="table small">
+            <caption className="sr-only">Riwayat aksi kontrol AP</caption>
+            <thead>
+              <tr>
+                <th scope="col">Waktu</th>
+                <th scope="col">Aksi</th>
+                <th scope="col">Oleh</th>
+                <th scope="col">Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {actions.map((row) => (
+                <tr key={row.id}>
+                  <td>{formatTime(row.requested_at)}</td>
+                  <td>{row.action}</td>
+                  <td>{row.requested_by}</td>
+                  <td>{row.status === 'sent' ? 'terkirim' : `gagal (${row.error_code ?? '-'})`}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
     </section>
   );

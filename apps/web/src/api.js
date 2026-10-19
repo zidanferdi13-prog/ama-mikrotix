@@ -69,6 +69,8 @@ export const api = {
   },
 
   clients: (id) => request(`/api/devices/${id}/clients`),
+  deviceActions: (id, limit = 20) => request(`/api/devices/${id}/actions?limit=${limit}`),
+  rebootDevice: (id, confirm) => request(`/api/devices/${id}/actions`, json('POST', { action: 'reboot', confirm })),
   alerts: (limit = 20) => request(`/api/alerts?limit=${limit}`),
   health: () => request('/api/health'),
 
