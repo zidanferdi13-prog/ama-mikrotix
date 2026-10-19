@@ -34,6 +34,10 @@ export const METRICS = {
     'memory_used_bytes',
     'memory_used_percent',
     'client_count',
+    // Uplink ethernet + radio per band dari mca-dump (migrasi 006). NULL = tidak terukur.
+    'eth_speed_mbps', 'eth_full_duplex', 'eth_up', 'eth_rx_errors', 'eth_tx_errors', 'eth_rx_dropped', 'eth_tx_dropped',
+    'radio_ng_channel', 'radio_ng_cu_total', 'radio_ng_cu_interf', 'radio_ng_noise_floor', 'radio_ng_tx_retries', 'radio_ng_tx_packets',
+    'radio_na_channel', 'radio_na_cu_total', 'radio_na_cu_interf', 'radio_na_noise_floor', 'radio_na_tx_retries', 'radio_na_tx_packets',
   ],
 };
 

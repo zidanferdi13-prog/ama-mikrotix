@@ -92,6 +92,22 @@ export default function Detail({ id, onBack }) {
     ([, value]) => value?.status && value.status !== 'ok',
   );
 
+  // Link ethernet + radio: nilai NULL berarti tidak terukur (vendor non-UniFi / field hilang).
+  const linkValue =
+    latestSystem?.eth_speed_mbps == null
+      ? '—'
+      : `${num(latestSystem.eth_speed_mbps, 0)} Mbps ${latestSystem.eth_full_duplex === 0 ? 'HD' : 'FD'}`;
+  const linkHint =
+    latestSystem?.eth_rx_errors == null
+      ? 'Error/drop tidak terukur'
+      : `Error RX/TX ${num(latestSystem.eth_rx_errors, 0)}/${num(latestSystem.eth_tx_errors, 0)} · Drop RX/TX ${num(latestSystem.eth_rx_dropped, 0)}/${num(latestSystem.eth_tx_dropped, 0)}`;
+  const radioText = (band) => {
+    const channel = latestSystem?.[`radio_${band}_channel`];
+    const cu = latestSystem?.[`radio_${band}_cu_total`];
+    if (channel == null && cu == null) return '—';
+    return `ch ${channel ?? '—'} · beban ${cu == null ? '—' : `${num(cu, 0)} %`}`;
+  };
+
   return (
     <div className="page">
       <div className="page-head">
@@ -193,6 +209,24 @@ export default function Detail({ id, onBack }) {
           }
           freshness={device.freshness?.load}
         />
+        <MetricCard
+          label="Link ethernet"
+          value={linkValue}
+          freshness={device.freshness?.system}
+          hint={linkHint}
+        />
+        <MetricCard
+          label="Radio 2,4 GHz"
+          value={radioText('ng')}
+          freshness={device.freshness?.system}
+          hint={latestSystem ? formatTime(latestSystem.observed_at) : 'Belum ada sampel'}
+        />
+        <MetricCard
+          label="Radio 5 GHz"
+          value={radioText('na')}
+          freshness={device.freshness?.system}
+          hint={latestSystem ? formatTime(latestSystem.observed_at) : 'Belum ada sampel'}
+        />
       </section>
 
       <section className="card stack">
@@ -202,6 +236,8 @@ export default function Detail({ id, onBack }) {
           <Chart values={systemPoints('memory_used_percent')} label="RAM terpakai" unit="%" height={200} />
           <Chart values={systemPoints('client_count')} label="Client terhubung" unit="client" height={200} digits={0} />
           <Chart values={systemPoints('load_1')} label="Load average 1 menit" height={200} digits={2} />
+          <Chart values={systemPoints('radio_ng_cu_total')} label="Beban kanal 2,4 GHz" unit="%" height={200} digits={0} />
+          <Chart values={systemPoints('radio_na_cu_total')} label="Beban kanal 5 GHz" unit="%" height={200} digits={0} />
         </div>
       </section>
 

@@ -143,6 +143,60 @@ export function parseDeviceIdentity(text) {
   return { vendor: 'Ubiquiti', model, firmware };
 }
 
+// Kolom link ethernet (if_table[0]) + radio per band (radio_table[].athstats) dari mca-dump.
+export const LINK_COLUMNS = ['eth_speed_mbps', 'eth_full_duplex', 'eth_up', 'eth_rx_errors', 'eth_tx_errors', 'eth_rx_dropped', 'eth_tx_dropped'];
+export const RADIO_BANDS = ['ng', 'na'];
+const RADIO_FIELDS = ['channel', 'cu_total', 'cu_interf', 'noise_floor', 'tx_retries', 'tx_packets'];
+export const RADIO_COLUMNS = RADIO_BANDS.flatMap((band) => RADIO_FIELDS.map((f) => `radio_${band}_${f}`));
+
+// Nilai di luar rentang/bukan angka → null (bukan 0). Counter kumulatif: bulat ≥ 0.
+const intIn = (v, lo, hi) => (Number.isSafeInteger(v) && v >= lo && v <= hi ? v : null);
+const counter = (v) => intIn(v, 0, Number.MAX_SAFE_INTEGER);
+const flag = (v) => (v === true || v === 1 ? 1 : v === false || v === 0 ? 0 : null);
+
+// JSON tanpa if_table/radio_table → unsupported (vendor lain), seperti client_count.
+export function parseLinkRadio(text) {
+  const values = Object.fromEntries([...LINK_COLUMNS, ...RADIO_COLUMNS].map((c) => [c, null]));
+  if (typeof text !== 'string' || text.trim() === '') return { values, link: invalid(ERROR_CODE.missing), radio: invalid(ERROR_CODE.missing) };
+  let data;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    return { values, link: invalid(ERROR_CODE.not_numeric), radio: invalid(ERROR_CODE.not_numeric) };
+  }
+
+  let link = unsupported();
+  if (Array.isArray(data?.if_table)) {
+    const eth = data.if_table[0] ?? {};
+    // speed 0 = link tidak aktif: bukan kecepatan, simpan null (bukan 0).
+    values.eth_speed_mbps = intIn(eth.speed, 1, 65535);
+    values.eth_full_duplex = flag(eth.full_duplex);
+    values.eth_up = flag(eth.up);
+    for (const k of ['rx_errors', 'tx_errors', 'rx_dropped', 'tx_dropped']) values[`eth_${k}`] = counter(eth[k]);
+    link = values.eth_speed_mbps === null ? invalid(ERROR_CODE.not_numeric) : ok(values.eth_speed_mbps);
+  }
+
+  let radio = unsupported();
+  if (Array.isArray(data?.radio_table)) {
+    for (const band of RADIO_BANDS) {
+      const a = data.radio_table.find((r) => r?.radio === band)?.athstats ?? {};
+      // Channel ada di VAP, bukan radio_table; vwire* = VAP mesh internal.
+      const vap = (Array.isArray(data.vap_table) ? data.vap_table : []).find((v) => v?.radio === band && !String(v?.essid ?? '').startsWith('vwire'));
+      values[`radio_${band}_channel`] = intIn(vap?.channel, 1, 233);
+      values[`radio_${band}_cu_total`] = intIn(a.cu_total, 0, 100);
+      values[`radio_${band}_cu_interf`] = intIn(a.cu_interf, 0, 100);
+      // ponytail: noise floor 2.4 GHz firmware ini berisi sampah (mis. -2078592224); rentang
+      // fisik -120..-50 dBm saja yang disimpan. Perluas bila ada radio dengan rentang lain.
+      values[`radio_${band}_noise_floor`] = intIn(a.noise_floor, -120, -50);
+      values[`radio_${band}_tx_retries`] = counter(a.n_tx_retries);
+      values[`radio_${band}_tx_packets`] = counter(a.n_tx_pkts);
+    }
+    const anyCu = RADIO_BANDS.some((b) => values[`radio_${b}_cu_total`] !== null);
+    radio = anyCu ? ok(null) : invalid(ERROR_CODE.not_numeric);
+  }
+  return { values, link, radio };
+}
+
 function statusesToCollectionStatus(statuses) {
   const values = Object.values(statuses);
   const anyOk = values.some((s) => s.status === METRIC_STATUS.ok);
@@ -159,6 +213,7 @@ export function normalizeSystemSample({ deviceId, observedAt, outputs = {}, rece
   const load = parseLoadavg(outputs.loadavg);
   const mem = parseMeminfo(outputs.meminfo);
   const clients = parseClientCount(outputs.mcaDump);
+  const linkRadio = parseLinkRadio(outputs.mcaDump);
 
   const metricStatus = {
     uptime_seconds: uptime.uptime_seconds,
@@ -176,10 +231,10 @@ export function normalizeSystemSample({ deviceId, observedAt, outputs = {}, rece
     kind: 'system',
     observed_at: observedAt,
     received_at: receivedAt ?? new Date().toISOString(),
-    // client_count tidak ikut menentukan collection_status: AP non-UniFi tidak punya mca-dump,
-    // dan itu tidak boleh menurunkan sampel uptime/load/RAM yang sehat menjadi partial.
+    // client_count/link/radio tidak ikut menentukan collection_status: AP non-UniFi tidak punya
+    // mca-dump, dan itu tidak boleh menurunkan sampel uptime/load/RAM yang sehat menjadi partial.
     collection_status: statusesToCollectionStatus(metricStatus),
-    metric_status: { ...metricStatus, client_count: clients.client_count },
+    metric_status: { ...metricStatus, client_count: clients.client_count, link: linkRadio.link, radio: linkRadio.radio },
     uptime_seconds: uptime.uptime_seconds.value,
     load_1: load.load_1.value,
     load_5: load.load_5.value,
@@ -189,6 +244,7 @@ export function normalizeSystemSample({ deviceId, observedAt, outputs = {}, rece
     memory_used_bytes: mem.memory_used_bytes.value,
     memory_used_percent: mem.memory_used_percent.value,
     client_count: clients.client_count.value,
+    ...linkRadio.values,
   };
 }
 

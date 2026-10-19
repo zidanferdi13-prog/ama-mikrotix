@@ -10,6 +10,7 @@ import {
   parseMeminfo,
   parseClientCount,
   parseDeviceIdentity,
+  parseLinkRadio,
   normalizeSystemSample,
 } from '../src/parser.js';
 import { METRIC_STATUS, ERROR_CODE } from '../src/contracts.js';
@@ -196,4 +197,68 @@ test('parseDeviceIdentity: model_display + version dari mca-dump UniFi, selain i
   assert.equal(parseDeviceIdentity(JSON.stringify({ model_display: 'X', version: '1' })), null);
   assert.equal(parseDeviceIdentity('bukan json'), null);
   assert.equal(parseDeviceIdentity(undefined), null);
+});
+
+// Bentuk asli mca-dump UniFi (dipangkas): if_table[0] + radio_table[].athstats + channel dari VAP.
+const linkRadioDump = (over = {}) => JSON.stringify({
+  if_table: [{ name: 'eth0', speed: 1000, full_duplex: true, up: true, rx_errors: 0, tx_errors: 0, rx_dropped: 6, tx_dropped: 0 }],
+  radio_table: [
+    { name: 'wifi0', radio: 'ng', athstats: { cu_total: 19, cu_interf: 0, noise_floor: -2078592224, n_tx_retries: 1892638, n_tx_pkts: 17148357 } },
+    { name: 'wifi1', radio: 'na', athstats: { cu_total: 2, noise_floor: -95, n_tx_retries: 10, n_tx_pkts: 100 } },
+  ],
+  vap_table: [
+    { radio: 'na', essid: 'vwire-abc', channel: 36 },
+    { radio: 'ng', essid: 'Kantor', channel: 1 },
+    { radio: 'na', essid: 'Kantor', channel: 149 },
+  ],
+  ...over,
+});
+
+test('parseLinkRadio: link + radio per band, nilai sampah/hilang → null', () => {
+  const { values, link, radio } = parseLinkRadio(linkRadioDump());
+  assert.equal(link.status, METRIC_STATUS.ok);
+  assert.equal(radio.status, METRIC_STATUS.ok);
+  assert.equal(values.eth_speed_mbps, 1000);
+  assert.equal(values.eth_full_duplex, 1);
+  assert.equal(values.eth_up, 1);
+  assert.equal(values.eth_rx_dropped, 6);
+  assert.equal(values.radio_ng_channel, 1);
+  assert.equal(values.radio_na_channel, 149); // VAP vwire (mesh) dilewati
+  assert.equal(values.radio_ng_cu_total, 19);
+  assert.equal(values.radio_ng_noise_floor, null); // firmware melaporkan sampah
+  assert.equal(values.radio_na_noise_floor, -95);
+  assert.equal(values.radio_na_cu_interf, null); // firmware lama tidak punya field ini
+  assert.equal(values.radio_ng_tx_retries, 1892638);
+
+  // Nilai rusak: negatif, bukan angka, di luar rentang → null, tidak pernah 0.
+  const rusak = parseLinkRadio(linkRadioDump({
+    if_table: [{ speed: 0, full_duplex: 'ya', rx_errors: -1, tx_errors: '3' }],
+    radio_table: [{ radio: 'ng', athstats: { cu_total: 101 } }, { radio: 'na', athstats: { cu_total: 'x' } }],
+  }));
+  assert.equal(rusak.values.eth_speed_mbps, null);
+  assert.equal(rusak.values.eth_full_duplex, null);
+  assert.equal(rusak.values.eth_rx_errors, null);
+  assert.equal(rusak.values.eth_tx_errors, null);
+  assert.equal(rusak.link.status, METRIC_STATUS.invalid);
+  assert.equal(rusak.values.radio_ng_cu_total, null);
+  assert.equal(rusak.radio.status, METRIC_STATUS.invalid);
+
+  // Bukan UniFi → unsupported; output hilang/rusak → invalid.
+  assert.equal(parseLinkRadio('{"uptime":1}').link.status, METRIC_STATUS.unsupported);
+  assert.equal(parseLinkRadio('{"uptime":1}').radio.status, METRIC_STATUS.unsupported);
+  assert.equal(parseLinkRadio(undefined).link.code, ERROR_CODE.missing);
+  assert.equal(parseLinkRadio('bukan json').radio.code, ERROR_CODE.not_numeric);
+});
+
+test('normalizeSystemSample menyertakan link/radio tanpa mengubah collection_status', () => {
+  const outputs = { uptime: fixture('uptime.txt'), loadavg: fixture('loadavg.txt'), meminfo: fixture('meminfo.txt') };
+  const sample = normalizeSystemSample({ deviceId: 1, observedAt: OBSERVED_AT, outputs: { ...outputs, mcaDump: linkRadioDump({ if_table: [{ speed: 100 }] }) } });
+  assert.equal(sample.eth_speed_mbps, 100);
+  assert.equal(sample.radio_na_cu_total, 2);
+  assert.equal(sample.metric_status.link.status, METRIC_STATUS.ok);
+  assert.equal(sample.collection_status, 'ok');
+  const lain = normalizeSystemSample({ deviceId: 1, observedAt: OBSERVED_AT, outputs: { ...outputs, mcaDump: '{"vap_table":[]}' } });
+  assert.equal(lain.metric_status.radio.status, METRIC_STATUS.unsupported);
+  assert.equal(lain.eth_speed_mbps, null);
+  assert.equal(lain.collection_status, 'ok');
 });

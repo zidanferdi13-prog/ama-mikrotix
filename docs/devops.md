@@ -393,6 +393,43 @@ Diputuskan saat menambah alert proaktif & insiden (2026-10):
   dipakai: builtin shell, `ash: info: not found` lewat exec. `name` tidak pernah ditimpa (nama
   pilihan operator). Vendor tanpa `mca-dump` tetap `identity_verified=0` dan diisi manual.
 
+Diputuskan saat menambah kesehatan link ethernet & radio (2026-10-16):
+
+- **Sumber tetap `mca-dump`** — `if_table[0]` (uplink ethernet) dan `radio_table[].athstats`
+  (per band) dibaca dari output yang **sudah** diambil tiap siklus sistem. Tidak ada perintah SSH
+  baru, tidak ada sesi tambahan ke AP. Channel diambil dari `vap_table` (VAP `vwire*` = mesh
+  internal, dilewati). Kolom `device_metrics` baru: migrasi `006`.
+- **Nilai tak terukur = `NULL`, tidak pernah `0`** — `speed` 0 (link nonaktif), `cu_*` di luar
+  0–100, counter negatif/bukan angka, dan `noise_floor` di luar −120…−50 dBm semuanya jadi
+  `NULL`. Firmware 4.3.31 (dev 8) melaporkan `noise_floor` 2,4 GHz sebagai sampah
+  (mis. −2078592224) → tidak disimpan, bukan diartikan sebagai noise sangat rendah
+  (`ponytail:` di `parser.js`, perluas bila ada radio dengan rentang lain).
+- **`link`/`radio` di `metric_status` tidak memengaruhi `collection_status`** — sama seperti
+  `client_count`: AP non-UniFi berstatus `unsupported` (bukan error) dan itu tidak boleh
+  menurunkan sampel uptime/load/RAM yang sehat menjadi `partial`.
+- **Rule baru** — `ap.link.speed_low` (warning, `eth_speed_mbps` < 1000 selama 5 menit),
+  `ap.link.errors` (warning, counter `rx_errors+tx_errors` naik pada ≥2 interval sampel dalam
+  jendela 20 menit; turun = counter reset saat reboot → diabaikan), `ap.radio.{ng,na}.busy`
+  (warning, channel utilisation > 70 % selama 10 menit), `ap.radio.{ng,na}.interference`
+  (info, `cu_interf` > 30 % selama 10 menit). Ambang 1000 Mbps karena semua AP saat ini
+  (UAP-AC-LR/Lite/Pro) ber-port gigabit; dev 12 (UAP-AC-Pro-Gen2) hanya menegosiasi 100 FD →
+  temuan nyata di sisi kabel/port. `ap.radio.*` masuk indikator `ap_resources` korelasi (bukan
+  indikator baru): radio padat bisa berasal dari AP tetangga, tapi tetap alasan AP perlu dilihat.
+- **`rx_dropped`/`tx_dropped` tidak dinilai, hanya ditampilkan** — pada AP berbasis Linux counter
+  itu ikut menghitung frame VLAN/protokol tak dikenal. Kalibrasi 2026-10-16: dev 8 menambah
+  ~14 drop/menit sementara `rx_errors`/`tx_errors` tetap 0 di 9 AP — akan jadi alert palsu terus
+  menerus. Tampil di kartu Detail sebagai konteks saat link bermasalah.
+- **Kalibrasi 2026-10-16 (data live, 9 AP)** — `eth_speed_mbps` 1000 (dev 12 = 100),
+  `rx/tx_errors` 0 semua, channel utilisation maksimum 39 % (ng dev 2), `cu_interf` `NULL` di
+  dev 2/7/8/12, `noise_floor` ng `NULL` semua dan na ≈ −95 dBm. Ambang rule diletakkan jauh di
+  atas nilai normal ini supaya tidak menyala karena fluktuasi biasa; `cu_interf` `NULL` membuat
+  rule interferensi tidak dinilai (hold), bukan tutup.
+- **Penerapan di host ini** — migrasi `006` dijalankan sebagai root via socket
+  (`sudo mysql --protocol=socket -uroot ama_monitoring < db/migrations/006_link_radio.sql`)
+  **sebelum** collector di-restart, karena `INSERT` metrik sistem memakai kolom baru. Setelah itu
+  `ama-collector` + `ama-server` di-restart dan dashboard di-build ulang lalu disalin ke
+  `/srv/ama-mikrotix/apps/web/dist`.
+
 Masih terbuka:
 
 - **Retensi `monitoring_events`** — belum dihapus otomatis (baris sedikit: hanya transisi status).

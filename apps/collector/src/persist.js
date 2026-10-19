@@ -1,6 +1,9 @@
 // Persistensi §6: satu transaksi per siklus. Rollback → tandai gagal, tanpa emit sukses.
-import { REACHABLE, applyPingTransition } from '@ama/shared';
+import { LINK_COLUMNS, RADIO_COLUMNS, REACHABLE, applyPingTransition } from '@ama/shared';
 import { log } from './logger.js';
+
+// Kolom link/radio (migrasi 006) — nama dari konstanta, bukan masukan pengguna.
+const LINK_RADIO = [...LINK_COLUMNS, ...RADIO_COLUMNS];
 
 // Perintah tetap tanpa string masukan pengguna.
 const SQL = {
@@ -8,8 +11,8 @@ const SQL = {
       (device_id, kind, observed_at, received_at, collection_status,
        reachable, latency_ms, uptime_seconds, load_1, load_5, load_15,
        memory_total_bytes, memory_available_bytes, memory_used_bytes, memory_used_percent,
-       client_count, metric_status)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+       client_count, metric_status, ${LINK_RADIO.join(', ')})
+    VALUES (${Array(17 + LINK_RADIO.length).fill('?').join(',')})`,
   selectDevice: 'SELECT * FROM devices WHERE id = ? FOR UPDATE',
   updateDevice: `UPDATE devices SET
       reachable = ?, ping_fail_count = ?, ping_ok_count = ?, last_ping_attempt_at = ?
@@ -91,6 +94,7 @@ export async function persistPing(pool, sample) {
       sample.latency_ms,
       null, null, null, null, null, null, null, null, null,
       JSON.stringify({ reachable: { status: sample.reachable === null ? 'unsupported' : 'ok', code: sample.code ?? null } }),
+      ...LINK_RADIO.map(() => null),
     ]);
 
     await conn.query(SQL.updateDevice, [
@@ -154,6 +158,7 @@ export async function persistSystem(pool, sample) {
       sample.memory_used_percent,
       sample.client_count,
       JSON.stringify(sample.metric_status ?? {}),
+      ...LINK_RADIO.map((c) => sample[c] ?? null),
     ]);
 
     await conn.query(SQL.updateLastValid, [

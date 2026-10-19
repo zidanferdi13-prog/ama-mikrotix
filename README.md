@@ -108,7 +108,8 @@ ringkasan, filter (severity/status/perangkat/periode), detail bukti, dan aksi ac
 
 - Rules: ketersediaan AP (`ap.unreachable`, `ap.flapping`, `ap.ssh.*`, `ap.metrics.stale`,
   `ap.collector_stalled`, `ap.unverified`, `ap.reboot`), performa (`ap.latency.high|critical`,
-  `ap.memory.high`, `ap.load.high`, `ap.client_count.drop|spike`), kesehatan client
+  `ap.memory.high`, `ap.load.high`, `ap.client_count.drop|spike`), uplink & radio
+  (`ap.link.speed_low`, `ap.link.errors`, `ap.radio.{ng,na}.busy|interference`), kesehatan client
   (`client.signal.*`, `client.flapping`, `client.disconnected`, `client.traffic_stalled`),
   dan korelasi (`incident.ap`, `incident.shared_network`, `incident.collector`,
   `correlation.client_issue`). Semua ambang ada di `packages/shared/src/constants.js` (`ALERT`,
@@ -164,6 +165,10 @@ bisa membaca `~` pemilik repo yang bermode 700) — jalankan ulang setelah setia
 - Histori dibatasi maksimum 24 jam per permintaan (default 1 jam).
 - Alert dievaluasi collector tiap 15 s. Migrasi `005_alerts.sql` menambah tabel `alerts`,
   `alert_events`, `client_observations` — jalankan `npm run migrate` sebelum restart proses.
+- Migrasi `006_link_radio.sql` menambah kolom link ethernet (`eth_*`) dan radio per band
+  (`radio_{ng,na}_*`) pada `device_metrics`, dari `mca-dump` yang sudah diambil (tanpa perintah
+  SSH baru). Butuh hak DDL (root) — jalankan sebelum restart collector, karena INSERT metrik
+  sistem memakai kolom baru. `rx_dropped` hanya ditampilkan, tidak dijadikan alert.
 - `client_observations` (hanya MAC + AP, tanpa hostname/IP) disimpan 24 jam lalu dihapus otomatis.
 - Tanpa Docker/Redis/Kubernetes — satu proses per app, cocok untuk skala 3 AP.
 - Data di `fixtures/` **hanya** untuk pengujian parser; jangan tampilkan sebagai data live.

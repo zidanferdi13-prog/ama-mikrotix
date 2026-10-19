@@ -154,6 +154,42 @@ export function detectReboots(systemRows) {
   return events;
 }
 
+function lastValue(rows, field) {
+  for (let i = rows.length - 1; i >= 0; i -= 1) if (rows[i][field] != null) return rows[i][field];
+  return null;
+}
+
+// Counter error ethernet (rx+tx) kumulatif: hitung interval sampel yang naik. Turun = counter
+// reset (reboot) → diabaikan, bukan kenaikan negatif. Data hilang/tua → tidak dinilai (hold).
+export function detectLinkErrors(systemRows, atMs) {
+  const rows = systemRows
+    .filter((r) => ms(r.observed_at) !== null && r.eth_rx_errors != null && r.eth_tx_errors != null)
+    .map((r) => ({ at: r.observed_at, total: Number(r.eth_rx_errors) + Number(r.eth_tx_errors) }));
+  const last = rows[rows.length - 1];
+  if (rows.length < 2 || atMs - ms(last.at) > ALERT.maxDataAgeMs.metric + TOLERANCE_MS) return { evaluated: false };
+  const increases = [];
+  for (let i = 1; i < rows.length; i += 1) {
+    const delta = rows[i].total - rows[i - 1].total;
+    if (delta > 0) increases.push({ at: rows[i].at, delta });
+  }
+  return {
+    evaluated: true,
+    active: increases.length >= ALERT.linkErrors.minIncreases,
+    since: increases[0]?.at ?? null,
+    evidence: {
+      kind: 'link_errors',
+      increases: increases.length,
+      threshold: ALERT.linkErrors.minIncreases,
+      added_errors: increases.reduce((a, b) => a + b.delta, 0),
+      latest_total: last.total,
+      samples: rows.length,
+      window_ms: ALERT.deviceWindowMs,
+      next_steps: ['Ganti/periksa kabel dan konektor uplink AP', 'Cek counter error di port switch', 'Coba port switch lain'],
+      note: 'Counter rx/tx_errors kumulatif sejak boot; turun berarti AP reboot dan diabaikan.',
+    },
+  };
+}
+
 // Baseline = median sampel lebih tua dari recentMs (≤ windowMs); recent = median recentMs terakhir.
 export function detectClientCountChange(counts, atMs) {
   const cfg = ALERT.clientCount;
@@ -335,6 +371,42 @@ export function evaluateDeviceRules({ atMs, device, metrics = {}, events = [], a
     if (!res.evaluated) continue;
     const extra = ruleId === 'ap.load.high' ? { note: 'Load absolut karena jumlah CPU AP belum dikumpulkan; verifikasi manual bila alert sering muncul.' } : {};
     push(ruleId, res.active, res.since, { ...res.evidence, ...extra });
+  }
+
+  // Link ethernet: kecepatan negosiasi + counter error. rx_dropped hanya tampil di dashboard:
+  // pada Linux counter itu sering menghitung frame VLAN/protokol tak dikenal, bukan gangguan.
+  // ponytail: bila nanti perlu, rx_dropped bisa dinilai sebagai info dengan ambang laju.
+  const speedRule = evaluateThreshold('ap.link.speed_low', systemHistory, { atMs, open: openOf('ap.link.speed_low') });
+  if (speedRule.evaluated) {
+    push('ap.link.speed_low', speedRule.active, speedRule.since, {
+      ...speedRule.evidence,
+      full_duplex: lastValue(systemHistory, 'eth_full_duplex'),
+      next_steps: ['Cek kabel dan port switch uplink AP', 'Pastikan port switch tidak dipaksa 100 Mbps', 'Cek kabel tertekuk/terlalu panjang'],
+      note: 'Kecepatan negosiasi ethernet, bukan throughput Wi-Fi.',
+    });
+  }
+  const linkErrors = detectLinkErrors(systemHistory, atMs);
+  if (linkErrors.evaluated) push('ap.link.errors', linkErrors.active, openOf('ap.link.errors')?.first_seen_at ?? linkErrors.since, linkErrors.evidence);
+
+  // Radio per band (ng = 2,4 GHz, na = 5 GHz): channel utilisation dan interferensi.
+  for (const band of ['ng', 'na']) {
+    const label = band === 'ng' ? '2,4 GHz' : '5 GHz';
+    for (const kind of ['busy', 'interference']) {
+      const ruleId = `ap.radio.${band}.${kind}`;
+      const res = evaluateThreshold(ruleId, systemHistory, { atMs, open: openOf(ruleId) });
+      if (!res.evaluated) continue;
+      push(ruleId, res.active, res.since, {
+        ...res.evidence,
+        radio: label,
+        channel: lastValue(systemHistory, `radio_${band}_channel`),
+        note: kind === 'busy'
+          ? `Channel utilisation ${label}: porsi waktu udara terpakai, termasuk AP lain dan sumber non-Wi-Fi.`
+          : `Interferensi ${label}: porsi waktu udara terpakai sumber di luar AP ini.`,
+        next_steps: kind === 'busy'
+          ? ['Cek jumlah client aktif di band ini', 'Cek AP tetangga pada kanal sama', 'Pertimbangkan pindah kanal atau tambah AP']
+          : ['Pindai kanal di sekitar lokasi', 'Pindah ke kanal yang lebih bersih', 'Cek sumber interferensi non-Wi-Fi'],
+      });
+    }
   }
 
   // Reboot = peristiwa: alert ditutup otomatis setelah TTL.
@@ -549,7 +621,9 @@ const AVAILABILITY_RULES = ['ap.unreachable', 'ap.ssh.unavailable', 'ap.ssh.auth
 const LATENCY_RULES = ['ap.latency.high', 'ap.latency.critical'];
 // ap.client_count.* diturunkan dari daftar client yang sama dengan indikator `clients`:
 // bukan indikator mandiri, jadi tidak dihitung sebagai resource AP (hindari skor ganda).
-const RESOURCE_RULES = ['ap.memory.high', 'ap.load.high'];
+// Radio/ethernet: kondisi AP sendiri (bukan client) — indikator mandiri untuk korelasi §6.
+// Radio padat bisa berasal dari AP tetangga, tetapi tetap alasan "AP ini perlu dilihat".
+const RESOURCE_RULES = ['ap.memory.high', 'ap.load.high', 'ap.link.speed_low', 'ap.link.errors', 'ap.radio.ng.busy', 'ap.radio.na.busy', 'ap.radio.ng.interference', 'ap.radio.na.interference'];
 const CLIENT_RULES = ['client.signal.weak', 'client.signal.critical', 'client.flapping', 'client.disconnected', 'client.traffic_stalled'];
 // Gejala "client bermasalah". client.disconnected TIDAK termasuk: client yang pulang atau
 // dimatikan menghasilkan alert yang sama dengan client yang putus karena masalah, jadi churn
@@ -669,7 +743,8 @@ export function correlateAlerts({ atMs, alerts = [], devices = [], collectorAgeM
       scenario: 'A',
       indicators,
       evidence_present: [`${indicators.length} indikator mandiri pada AP ini`, `${symptomClients.length} client terdampak`],
-      evidence_missing: ['Status port uplink AP', 'Kualitas RF (interferensi, retry, channel utilisation)', 'Log AP'],
+      // Link ethernet + channel utilisation kini dinilai sendiri (ap.link.*, ap.radio.*).
+      evidence_missing: ['Counter port switch sisi uplink', 'Retry radio per client', 'Log AP'],
       note: 'Indikator saling menguatkan, tetapi penyebab fisik belum terkonfirmasi: ini bukan pernyataan bahwa AP rusak.',
       next_steps: ['Cek uplink/kabel/port switch AP ini', 'Cek channel dan interferensi radio', 'Bandingkan dengan AP lain di lokasi sama'],
       affected_devices: [id],
@@ -696,7 +771,7 @@ export function correlateAlerts({ atMs, alerts = [], devices = [], collectorAgeM
       scenario: 'B',
       indicators: clientList.map((a) => ({ source: 'client', detail: { mac: a.target, rule_id: a.rule_id } })),
       evidence_present: [`${targets.length} client bermasalah`, `AP sehat, ${device.client_count ?? 'tidak diketahui'} client terhubung`],
-      evidence_missing: ['Posisi fisik client', 'Data interferensi/retry radio'],
+      evidence_missing: ['Posisi fisik client', 'Retry/kualitas RF per client'],
       note: 'Satu client bermasalah sementara AP dan client lain normal → fokus ke sisi client/RF lokal.',
       next_steps: ['Cek posisi dan jarak client ke AP', 'Cek riwayat sinyal client ini', 'Uji dari perangkat lain di lokasi sama'],
       affected_devices: [id],

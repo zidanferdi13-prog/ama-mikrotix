@@ -36,6 +36,8 @@ const systemRow = (agoSec, values = {}) => ({
   load_1: values.load_1 ?? 0.2,
   memory_used_percent: values.memory_used_percent ?? 40,
   client_count: values.client_count ?? 5,
+  // Kolom link/radio (migrasi 006) diteruskan apa adanya; tidak diberi default.
+  ...Object.fromEntries(Object.entries(values).filter(([k]) => k.startsWith('eth_') || k.startsWith('radio_'))),
 });
 
 const sshSample = (agoSec, ssh) => ({ observed_at: sec(agoSec), ssh });
@@ -567,4 +569,84 @@ test('ambang alert terdefinisi lengkap dan konsisten', () => {
   }
   assert.equal(ALERT.clientGoneSnapshots >= 2, true);
   assert.equal(ALERT.apFlapping.transitions >= 2, true);
+});
+
+// --- Link ethernet + radio (mca-dump) -------------------------------------------
+// Deret sampel tiap 60 s; nilai tetap (hold) untuk menguji durasi.
+const series = (spanSec, values) => Array.from({ length: spanSec / 60 + 1 }, (_, i) => systemRow(spanSec - i * 60, typeof values === 'function' ? values(i) : values));
+
+test('ap.link.speed_low: link 100 Mbps ≥5 menit → aktif; 1000 Mbps → tidak', () => {
+  const lambat = deviceEval({ pingHistory: [pingRow(0, 1)], systemHistory: series(360, { eth_speed_mbps: 100, eth_full_duplex: 1 }) }).findings;
+  assert.equal(isActive(lambat, 'ap.link.speed_low'), true);
+  assert.equal(findingOf(lambat, 'ap.link.speed_low').evidence.full_duplex, 1);
+
+  const cepat = deviceEval({ pingHistory: [pingRow(0, 1)], systemHistory: series(360, { eth_speed_mbps: 1000, eth_full_duplex: 1 }) }).findings;
+  assert.equal(isActive(cepat, 'ap.link.speed_low'), false);
+});
+
+test('ap.link.speed_low: null/kedaluwarsa menahan (hold), bukan menutup alert', () => {
+  const hilang = deviceEval({ pingHistory: [pingRow(0, 1)], systemHistory: series(360, { eth_speed_mbps: null }) }).findings;
+  assert.equal(findingOf(hilang, 'ap.link.speed_low'), null, 'tanpa data rule tidak dinilai');
+
+  const terbuka = [{ dedup_key: KEY('ap.link.speed_low'), rule_id: 'ap.link.speed_low', device_id: DEVICE.id, target: null, first_seen_at: sec(900), status: 'open' }];
+  const hold = deviceEval({ pingHistory: [pingRow(0, 1)], systemHistory: series(360, { eth_speed_mbps: null }), alerts: terbuka }).findings;
+  assert.equal(findingOf(hold, 'ap.link.speed_low'), null, 'hold: alert lama dibiarkan apa adanya');
+
+  // Data tua juga hold.
+  const tua = deviceEval({ atMs: T0, pingHistory: [], systemHistory: [systemRow(3600, { eth_speed_mbps: 100 })] }).findings;
+  assert.equal(findingOf(tua, 'ap.link.speed_low'), null);
+});
+
+test('ap.link.errors: naik 2 sampel beruntun → aktif; counter reset (turun) bukan kenaikan', () => {
+  const naik = (...pairs) => pairs.map(([ago, rx, tx]) => systemRow(ago, { eth_rx_errors: rx, eth_tx_errors: tx }));
+  const error = deviceEval({ pingHistory: [pingRow(0, 1)], systemHistory: naik([300, 0, 0], [240, 0, 0], [180, 1, 0], [120, 1, 0], [60, 2, 3], [0, 2, 3]) }).findings;
+  const opened = findingOf(error, 'ap.link.errors');
+  assert.equal(opened.active, true);
+  assert.equal(opened.evidence.increases, 2);
+  assert.equal(opened.evidence.added_errors, 5); // rx +1, lalu rx +1 dan tx +3
+
+  const reset = deviceEval({ pingHistory: [pingRow(0, 1)], systemHistory: naik([300, 500, 500], [240, 1, 0], [180, 2, 0], [120, 2, 0], [60, 2, 0], [0, 2, 0]) }).findings;
+  assert.equal(findingOf(reset, 'ap.link.errors').active, false, 'turun = reboot, bukan lonjakan error');
+
+  const tanam = deviceEval({ pingHistory: [pingRow(0, 1)], systemHistory: naik([120, 5, 5], [60, 5, 5], [0, 5, 5]) }).findings;
+  assert.equal(findingOf(tanam, 'ap.link.errors').active, false, 'counter diam → tidak aktif');
+
+  // Tanpa data link → rule tidak dinilai (hold), bukan resolve.
+  const tanpaData = deviceEval({ pingHistory: [pingRow(0, 1)], systemHistory: [systemRow(0, {})] }).findings;
+  assert.equal(findingOf(tanpaData, 'ap.link.errors'), null);
+});
+
+test('ap.radio.ng.busy: cu_total 80 ≥10 menit → aktif, dengan channel di evidence', () => {
+  const findings = deviceEval({ pingHistory: [pingRow(0, 1)], systemHistory: series(660, { radio_ng_cu_total: 80, radio_ng_channel: 6 }) }).findings;
+  const busy = findingOf(findings, 'ap.radio.ng.busy');
+  assert.equal(busy.active, true);
+  assert.equal(busy.evidence.channel, 6);
+  assert.equal(busy.evidence.radio, '2,4 GHz');
+
+  const singkat = deviceEval({ pingHistory: [pingRow(0, 1)], systemHistory: series(300, { radio_ng_cu_total: 80 }) }).findings;
+  assert.equal(isActive(singkat, 'ap.radio.ng.busy'), false, '10 menit belum terpenuhi');
+
+  // Band 5 GHz terpisah: 5 GHz tenang tidak memicu rule na.
+  const na = deviceEval({ pingHistory: [pingRow(0, 1)], systemHistory: series(660, { radio_na_cu_total: 20, radio_na_cu_interf: null }) }).findings;
+  assert.equal(isActive(na, 'ap.radio.na.busy'), false);
+  assert.equal(isActive(na, 'ap.radio.na.interference'), false, 'null tidak dinilai');
+  assert.equal(activeRules(na).includes('ap.radio.na.busy'), false);
+});
+
+test('korelasi: alert link/radio dihitung sebagai indikator resource AP', () => {
+  const correlations = correlateAlerts({
+    atMs: T0,
+    alerts: [
+      { rule_id: 'ap.link.speed_low', device_id: DEVICE.id, target: null },
+      { rule_id: 'client.signal.weak', device_id: DEVICE.id, target: 'aa:bb:cc:00:00:0a' },
+    ],
+    devices: [{ id: DEVICE.id, stale: false, client_count: 3 }],
+    collectorAgeMs: 1000,
+  });
+  const scenarioA = correlations.find((c) => c.rule_id === 'incident.ap');
+  assert.ok(scenarioA, 'skenario A harus muncul');
+  const sources = scenarioA.diagnosis.indicators.map((i) => i.source);
+  assert.deepEqual([...sources].sort(), ['ap_resources', 'clients']);
+  assert.deepEqual(scenarioA.diagnosis.indicators.find((i) => i.source === 'ap_resources').detail.rules, ['ap.link.speed_low']);
+  assert.ok(scenarioA.diagnosis.evidence_missing.includes('Counter port switch sisi uplink'));
 });

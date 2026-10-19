@@ -1,5 +1,8 @@
 // Query terparameter, tanpa penyambungan string masukan §7.
-import { HISTORY, STALE_MS } from '@ama/shared';
+import { HISTORY, LINK_COLUMNS, RADIO_COLUMNS, STALE_MS } from '@ama/shared';
+
+// Kolom link/radio dari mca-dump (migrasi 006) — dipakai grafik & kartu detail perangkat.
+const LINK_RADIO_SQL = [...LINK_COLUMNS, ...RADIO_COLUMNS].join(', ');
 
 // Rentang /api/summary: tetapkan bucket tetap agar seri maksimum 60 titik.
 export const SUMMARY_RANGES = {
@@ -321,7 +324,7 @@ export async function getMetrics(pool, id, range, kind) {
   const params = [id, sqlTime(range.from), sqlTime(range.to)];
   let sql = `SELECT observed_at, kind, collection_status, reachable, latency_ms,
                     uptime_seconds, load_1, load_5, load_15,
-                    memory_used_bytes, memory_used_percent, client_count, metric_status
+                    memory_used_bytes, memory_used_percent, client_count, metric_status, ${LINK_RADIO_SQL}
              FROM device_metrics
              WHERE device_id = ? AND observed_at BETWEEN ? AND ?`;
   if (kind) {
@@ -561,7 +564,7 @@ export async function getAlert(pool, id, now = Date.now()) {
     const [metrics, clients] = await Promise.all([
       pool.query(
         `SELECT observed_at, kind, collection_status, reachable, latency_ms, memory_used_percent,
-                load_1, client_count
+                load_1, client_count, ${LINK_RADIO_SQL}
          FROM device_metrics
          WHERE device_id = ? AND observed_at BETWEEN ? AND ? AND kind IN ('ping','system')
          ORDER BY observed_at ASC LIMIT 2000`,

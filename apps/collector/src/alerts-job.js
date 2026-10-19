@@ -5,6 +5,8 @@
 import {
   ALERT,
   ALERT_RULES,
+  LINK_COLUMNS,
+  RADIO_COLUMNS,
   alertDedupKey,
   correlateAlerts,
   evaluateClientRules,
@@ -38,7 +40,8 @@ async function loadState(conn, atMs) {
     conn.query('SELECT id, name FROM devices WHERE enabled = 1 ORDER BY id'),
     conn.query(
       `SELECT device_id, kind, observed_at, collection_status, reachable, latency_ms,
-              memory_used_percent, load_1, client_count, metric_status
+              memory_used_percent, load_1, client_count, metric_status,
+              ${[...LINK_COLUMNS, ...RADIO_COLUMNS].join(', ')}
        FROM device_metrics WHERE observed_at >= ? ORDER BY device_id, observed_at ASC`,
       [since],
     ),
@@ -97,6 +100,7 @@ function shapeInputs(state, atMs) {
       load_1: row.load_1 === null ? null : Number(row.load_1),
       memory_used_percent: row.memory_used_percent === null ? null : Number(row.memory_used_percent),
       client_count: row.client_count === null ? null : Number(row.client_count),
+      ...Object.fromEntries([...LINK_COLUMNS, ...RADIO_COLUMNS].map((c) => [c, row[c] == null ? null : Number(row[c])])),
     });
     entry.systemSamples.push({ observed_at: at, ssh: metricStatus.ssh ?? null });
     // Snapshot client dianggap SUKSES hanya bila client_count berstatus ok:

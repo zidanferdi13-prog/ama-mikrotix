@@ -89,6 +89,10 @@ export const ALERT = {
   // no_secret/host_key bersifat deterministik → 1 sampel cukup; timeout/auth → 2 beruntun.
   sshFailures: 2,
   correlation: { apMinScore: 2, sharedMinDevices: 2, collectorStaleDevices: 2 },
+  // Counter rx/tx_errors uplink naik pada ≥ minIncreases interval sampel dalam deviceWindowMs
+  // (20 menit) → aktif; kenaikan di jendela < minIncreases → pulih.
+  // Kalibrasi 2026-10-16: error 0 di 9 AP. rx_dropped TIDAK dinilai (lihat devops.md).
+  linkErrors: { minIncreases: 2 },
 };
 
 // kind=threshold dievaluasi generik; sisanya punya evaluator khusus di alerts.js.
@@ -118,6 +122,15 @@ export const ALERT_RULES = {
   // ponytail: ambang load absolut; jumlah CPU AP belum dikumpulkan. Ganti ke
   // load/CPU bila /proc/cpuinfo ditambahkan ke SYSTEM_COMMANDS.
   'ap.load.high': thr('warning', 'Load average AP tinggi', 'load_1', 'system', 'above', 4, 2, 5, 3),
+  // ponytail: ambang 1000 karena semua model AP saat ini (UAP-AC-LR/Lite/Pro) punya port
+  // gigabit. Bila ada AP 100 Mbps-only, butuh ambang per model/AP.
+  'ap.link.speed_low': thr('warning', 'Link ethernet AP di bawah 1 Gbps', 'eth_speed_mbps', 'system', 'below', 1000, 1000, 5, 5),
+  'ap.link.errors': { kind: 'link_errors', severity: 'warning', title: 'Error ethernet uplink AP bertambah' },
+  // Channel utilisation = % waktu udara terpakai (semua sumber). Kalibrasi 2026-10-16: maks 39.
+  'ap.radio.ng.busy': thr('warning', 'Radio 2,4 GHz AP sangat sibuk', 'radio_ng_cu_total', 'system', 'above', 70, 60, 10, 5),
+  'ap.radio.na.busy': thr('warning', 'Radio 5 GHz AP sangat sibuk', 'radio_na_cu_total', 'system', 'above', 70, 60, 10, 5),
+  'ap.radio.ng.interference': thr('info', 'Interferensi radio 2,4 GHz tinggi', 'radio_ng_cu_interf', 'system', 'above', 30, 20, 10, 5),
+  'ap.radio.na.interference': thr('info', 'Interferensi radio 5 GHz tinggi', 'radio_na_cu_interf', 'system', 'above', 30, 20, 10, 5),
   'client.signal.weak': thr('warning', 'Sinyal client lemah', 'signal_dbm', 'client', 'below', -70, -67, 3, 3),
   'client.signal.critical': thr('warning', 'Sinyal client sangat lemah', 'signal_dbm', 'client', 'below', -80, -77, 2, 3),
   'client.flapping': { kind: 'client_flapping', severity: 'warning', title: 'Client sering hilang lalu muncul lagi' },
