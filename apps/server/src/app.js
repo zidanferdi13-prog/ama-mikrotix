@@ -32,6 +32,7 @@ import { parseDeviceInput, parseProbeInput } from './device-input.js';
 import { hasSecret as hasStoredSecret, readAll as readSecrets, setSecret, removeSecret } from './secrets-file.js';
 import { probeHostKey } from './ssh-probe.js';
 import { listClients } from './ssh-clients.js';
+import { assetLookupFor } from './assets.js';
 import { runDeviceAction, ACTIONS } from './ssh-action.js';
 import { log } from './logger.js';
 
@@ -48,8 +49,17 @@ function emptySeries(buckets) {
   return { latency: new Array(buckets).fill(null), ram: new Array(buckets).fill(null) };
 }
 
-export function createApp({ pool, allowedOrigin, probe = probeHostKey, clients = listClients, action = runDeviceAction }) {
+export function createApp({ pool, assetLookup = null, allowedOrigin, probe = probeHostKey, clients = listClients, action = runDeviceAction }) {
   const app = express();
+  // MAC → { name, owner } untuk Alert Center. Inventaris gagal ≠ alert gagal: kembalikan {}.
+  const assetMap = assetLookupFor(assetLookup);
+  const assetsFor = (macs) =>
+    assetMap(macs)
+      .then((map) => Object.fromEntries(map))
+      .catch((err) => {
+        log.info({ event: 'asset_lookup_failed', code: String(err?.code ?? err?.name ?? 'unknown') });
+        return {};
+      });
   app.use(express.json({ limit: '64kb' }));
   app.use(cookieParser());
 
@@ -276,11 +286,20 @@ export function createApp({ pool, allowedOrigin, probe = probeHostKey, clients =
         log.info({ event: 'clients_failed', deviceId: id, code: result.code });
         return res.status(502).json({ error: 'clients_failed', code: result.code });
       }
+      let list = result.clients;
+      if (assetLookup) {
+        // Inventaris gagal ≠ daftar client gagal: tampilkan tanpa nama aset/pemilik.
+        // `code` (mis. http_404, bad_shape, TimeoutError) langsung terlihat di log.
+        list = await assetLookup(list).catch((err) => {
+          log.info({ event: 'asset_lookup_failed', deviceId: id, code: String(err?.code ?? err?.name ?? 'unknown') });
+          return list;
+        });
+      }
       return res.json({
         observed_at: result.observedAt,
         total: result.total,
         truncated: result.truncated,
-        clients: result.clients,
+        clients: list,
       });
     } catch (err) {
       return next(err);
@@ -385,7 +404,8 @@ export function createApp({ pool, allowedOrigin, probe = probeHostKey, clients =
       const parsed = parseAlertQuery(req.query);
       if (parsed.error) return res.status(400).json({ error: parsed.error });
       const alerts = await listAlertCenter(pool, parsed);
-      return res.json({ alerts, limit: parsed.limit, offset: parsed.offset });
+      const assets = await assetsFor(alerts.map((a) => a.target));
+      return res.json({ alerts, assets, limit: parsed.limit, offset: parsed.offset });
     } catch (err) {
       return next(err);
     }
@@ -396,7 +416,12 @@ export function createApp({ pool, allowedOrigin, probe = probeHostKey, clients =
       if (!isInt(req.params.id)) return res.status(400).json({ error: 'invalid_id' });
       const detail = await getAlert(pool, Number(req.params.id));
       if (!detail) return res.status(404).json({ error: 'not_found' });
-      return res.json(detail);
+      const macs = [
+        detail.alert.target,
+        ...(detail.alert.diagnosis?.affected_clients ?? []),
+        ...detail.context.clients.map((c) => c.mac),
+      ];
+      return res.json({ ...detail, assets: await assetsFor(macs) });
     } catch (err) {
       return next(err);
     }

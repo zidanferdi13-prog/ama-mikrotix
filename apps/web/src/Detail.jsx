@@ -594,6 +594,8 @@ function ClientsCard({ id }) {
                 <thead>
                   <tr>
                     <th scope="col">Nama</th>
+                    <th scope="col">Aset</th>
+                    <th scope="col">Pemilik</th>
                     <th scope="col">IP</th>
                     <th scope="col">MAC</th>
                     <th scope="col">Sinyal</th>
@@ -608,6 +610,8 @@ function ClientsCard({ id }) {
                     return (
                     <tr key={c.mac ?? i}>
                       <th scope="row">{c.hostname || '—'}</th>
+                      <td>{c.asset_name ?? '—'}</td>
+                      <td>{c.asset_owner ?? '—'}</td>
                       <td className="mono">{c.ip ?? '—'}</td>
                       <td className="mono">{c.mac ?? '—'}</td>
                       <td className={`num${tone ? ` sig-${tone}` : ''}`}>

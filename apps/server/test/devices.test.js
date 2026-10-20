@@ -19,6 +19,7 @@ const { createApp } = await import('../src/app.js');
 const { probeHostKey } = await import('../src/ssh-probe.js');
 const { listClients } = await import('../src/ssh-clients.js');
 const { runDeviceAction } = await import('../src/ssh-action.js');
+const { createAssetLookup } = await import('../src/assets.js');
 
 function writeSecrets(data) {
   writeFileSync(SECRETS_FILE, `${JSON.stringify(data, null, 2)}\n`, { mode: 0o600 });
@@ -597,6 +598,55 @@ test('GET /api/devices/:id/clients: 400/404/409/502/200 + tanpa rahasia di respo
     assert.match(joined, /clients_failed/);
     assert.doesNotMatch(joined, /rahasiaClients|192\.168\.5\.228/);
   }, { clients: async () => ({ ok: false, code: 'host_key_changed' }) });
+});
+
+test('GET /api/devices/:id/clients: asset_name + owner dari API inventaris via MAC; API gagal ≠ 502', async () => {
+  const store = createStubPool();
+  const device = store.addDevice({ name: 'AP-A', ip: '192.168.5.228', host_key_fingerprint: `sha256:${'C'.repeat(43)}=` });
+  writeSecrets({ [device.id]: 'rahasiaAset' });
+  const clients = [{ mac: 'AA:BB:CC:DD:EE:FF' }, { mac: '11:22:33:44:55:66' }, { mac: 'DE:AD:BE:EF:00:00' }];
+  const stubClients = async () => ({ ok: true, clients, total: 3, truncated: false, observedAt: 'x' });
+  const rows = [
+    { mac_addr: 'aa:bb:cc:dd:ee:ff', asset_name: 'Laptop Finance 01', owner: 'DEDI SANTOSA', nomor_tlp: '085179633608' },
+    { mac_addr: '11-22-33-44-55-66', asset_name: 'PC Produksi', owner: null },
+    { mac_addr: 'aa:bb:cc:dd:ee:ff', asset_name: 'Duplikat', owner: 'X' },
+    { mac_addr: null, asset_name: 'Tanpa MAC', owner: 'Y' },
+  ];
+  let calls = 0;
+  const fetchFn = async () => {
+    calls += 1;
+    return new Response(JSON.stringify({ respone_code: '200', data: { master_data: rows } }), { status: 200 });
+  };
+  const lookup = createAssetLookup('https://contoh.test/api', { fetchFn });
+
+  await withServer(store, async (base) => {
+    const body = await (await call(base, await login(base), `/api/devices/${device.id}/clients`)).json();
+    assert.deepEqual(body.clients.map((c) => [c.asset_name, c.asset_owner]), [
+      ['Laptop Finance 01', 'DEDI SANTOSA'], ['PC Produksi', null], [null, null],
+    ]);
+    // MAC tidak ada di inventaris tidak menghapus client dari daftar.
+    assert.deepEqual(body.clients.map((c) => c.mac), clients.map((c) => c.mac));
+    // Kolom inventaris lain (mis. nomor telepon) tidak pernah ikut ke frontend.
+    assert.doesNotMatch(JSON.stringify(body), /085179633608/);
+    assert.equal(calls, 1);
+    // Daftar di-cache: permintaan berikutnya tidak menembak API lagi.
+    await call(base, await login(base), `/api/devices/${device.id}/clients`);
+    assert.equal(calls, 1);
+  }, { clients: stubClients, assetLookup: lookup });
+
+  let gagalCalls = 0;
+  const gagal = async () => {
+    gagalCalls += 1;
+    return new Response('nope', { status: 503 });
+  };
+  await withServer(store, async (base) => {
+    const res = await call(base, await login(base), `/api/devices/${device.id}/clients`);
+    assert.equal(res.status, 200);
+    assert.deepEqual((await res.json()).clients, clients);
+    // Gagal tidak di-cache: permintaan berikutnya mencoba API lagi.
+    assert.equal((await call(base, await login(base), `/api/devices/${device.id}/clients`)).status, 200);
+    assert.equal(gagalCalls, 2);
+  }, { clients: stubClients, assetLookup: createAssetLookup('https://contoh.test/api', { fetchFn: gagal }) });
 });
 
 test('listClients: host key wajib cocok, pemetaan mca-dump, batas 200, koneksi selalu ditutup', async () => {

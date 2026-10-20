@@ -10,6 +10,7 @@ process.env.AMA_AUTH_USER = 'operator';
 process.env.AMA_AUTH_PASSWORD = 'rahasia';
 
 const { createApp } = await import('../src/app.js');
+const { createAssetLookup } = await import('../src/assets.js');
 
 const T0 = Date.parse('2026-10-16T02:00:00.000Z');
 const at = (minAgo) => new Date(T0 - minAgo * 60_000);
@@ -106,8 +107,8 @@ function alertPool(seed = []) {
   return { pool: { query: (sql, params) => route(sql, params), getConnection: async () => conn }, state };
 }
 
-async function withServer(pool, run) {
-  const app = createApp({ pool, allowedOrigin: 'http://localhost:5173' });
+async function withServer(pool, run, options = {}) {
+  const app = createApp({ pool, allowedOrigin: 'http://localhost:5173', ...options });
   const server = createServer(app);
   await new Promise((r) => server.listen(0, r));
   const base = `http://127.0.0.1:${server.address().port}`;
@@ -265,4 +266,31 @@ test('ringkasan alert: angka dari DB dan status kesegaran collector', async () =
     assert.equal(body.collector.fresh, true);
     assert.ok(Date.parse(body.period.from) < Date.parse(body.period.to));
   });
+});
+
+test('alert center: nama aset untuk target, client terdampak; API inventaris gagal tetap 200', async () => {
+  const { pool } = alertPool([
+    { rule_id: 'client.signal.weak', target: 'aa:bb:cc:00:00:01' },
+    { rule_id: 'incident.scenario_b', target: null, diagnosis: { affected_clients: ['aa:bb:cc:00:00:01', 'aa:bb:cc:00:00:09'] } },
+  ]);
+  const inventory = { data: { master_data: [{ mac_addr: 'AA:BB:CC:00:00:01', asset_name: 'AMA-NB-01', owner: 'BUDI', nomor_tlp: '0812' }] } };
+  let up = true;
+  const fetchFn = async () => (up ? new Response(JSON.stringify(inventory)) : new Response('', { status: 500 }));
+
+  await withServer(pool, async (base) => {
+    const cookie = await login(base);
+    const list = await (await fetch(`${base}/api/alert-center`, { headers: { cookie } })).json();
+    assert.deepEqual(list.assets, { 'aa:bb:cc:00:00:01': { name: 'AMA-NB-01', owner: 'BUDI' } });
+
+    const incident = await (await fetch(`${base}/api/alerts/2`, { headers: { cookie } })).json();
+    assert.deepEqual(Object.keys(incident.assets), ['aa:bb:cc:00:00:01']);
+  }, { assetLookup: createAssetLookup('http://inv', { fetchFn }) });
+
+  up = false;
+  await withServer(pool, async (base) => {
+    const cookie = await login(base);
+    const res = await fetch(`${base}/api/alerts/1`, { headers: { cookie } });
+    assert.equal(res.status, 200);
+    assert.deepEqual((await res.json()).assets, {});
+  }, { assetLookup: createAssetLookup('http://inv', { fetchFn }) });
 });

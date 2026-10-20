@@ -47,12 +47,24 @@ function List({ title, items }) {
   );
 }
 
+// Nama aset di samping MAC bila ada di inventaris; MAC tetap ditampilkan.
+function AssetLabel({ mac, name }) {
+  if (!mac) return '—';
+  if (!name) return <span className="mono">{mac}</span>;
+  return (
+    <>
+      {name} <span className="sub mono">{mac}</span>
+    </>
+  );
+}
+
 export default function AlertCenter({ devices, refreshKey, alertEvent, onSelectDevice }) {
   const [severity, setSeverity] = useState('');
   const [status, setStatus] = useState('');
   const [deviceId, setDeviceId] = useState('');
   const [rangeKey, setRangeKey] = useState('24h');
   const [rows, setRows] = useState([]);
+  const [assets, setAssets] = useState({});
   const [summary, setSummary] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -76,6 +88,7 @@ export default function AlertCenter({ devices, refreshKey, alertEvent, onSelectD
         api.alertSummary(periodParams()),
       ]);
       setRows(list.alerts ?? []);
+      setAssets(list.assets ?? {});
       setSummary(ringkasan);
       setError(null);
     } catch (err) {
@@ -128,6 +141,7 @@ export default function AlertCenter({ devices, refreshKey, alertEvent, onSelectD
 
   const onAlert = detail?.alert ?? null;
   const diagnosis = onAlert?.diagnosis ?? null;
+  const assetsInDetail = detail?.assets ?? {};
 
   return (
     <div className="page">
@@ -289,7 +303,9 @@ export default function AlertCenter({ devices, refreshKey, alertEvent, onSelectD
                       )}
                       {row.reopen_count > 0 && <div className="sub">berulang ×{row.reopen_count}</div>}
                     </td>
-                    <td className="mono">{row.target ?? '—'}</td>
+                    <td>
+                      <AssetLabel mac={row.target} name={assets[row.target]?.name} />
+                    </td>
                     <td>
                       {formatRelative(row.last_seen_at)}
                       <div className="sub">{formatTime(row.last_seen_at)}</div>
@@ -362,7 +378,7 @@ export default function AlertCenter({ devices, refreshKey, alertEvent, onSelectD
             </div>
             <div>
               <dt>Target</dt>
-              <dd className="mono">{onAlert.target ?? '—'}</dd>
+              <dd><AssetLabel mac={onAlert.target} name={assetsInDetail[onAlert.target]?.name} /></dd>
             </div>
             <div>
               <dt>Pertama terlihat</dt>
@@ -427,7 +443,12 @@ export default function AlertCenter({ devices, refreshKey, alertEvent, onSelectD
                 </p>
               )}
               {diagnosis.affected_clients?.length > 0 && (
-                <p className="sub mono">Client terdampak: {diagnosis.affected_clients.join(', ')}</p>
+                <p className="sub">
+                  Client terdampak:{' '}
+                  {diagnosis.affected_clients
+                    .map((mac) => (assetsInDetail[mac]?.name ? `${assetsInDetail[mac].name} (${mac})` : mac))
+                    .join(', ')}
+                </p>
               )}
             </div>
           )}
@@ -478,6 +499,7 @@ export default function AlertCenter({ devices, refreshKey, alertEvent, onSelectD
                   <thead>
                     <tr>
                       <th>MAC</th>
+                      <th>Aset</th>
                       <th>Snapshot</th>
                       <th>Terakhir terlihat</th>
                       <th>Sinyal terburuk</th>
@@ -491,6 +513,7 @@ export default function AlertCenter({ devices, refreshKey, alertEvent, onSelectD
                       return (
                       <tr key={client.mac}>
                         <td className="mono">{client.mac}</td>
+                        <td>{assetsInDetail[client.mac]?.name ?? '—'}</td>
                         <td>{client.snapshots}</td>
                         <td>{formatTime(client.last_seen_at)}</td>
                         <td className={`num${worst ? ` sig-${worst}` : ''}`}>

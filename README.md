@@ -10,6 +10,15 @@ Jumlah client Wi-Fi yang terhubung ikut dikoleksi (perintah tetap `mca-dump`, ha
 yang disimpan). Daftar client (MAC/hostname/IP) hanya dibaca **live** saat diminta dari halaman
 Detail dan tidak pernah masuk database.
 
+Opsional: `AMA_ASSET_API_URL` (lihat `.env.example`) mengisi kolom **Aset** dan **Pemilik**
+pada daftar client live dari `data.master_data[]`, dicocokkan lewat `mac_addr` (format `:`/`-`/`.`
+dan huruf besar/kecil diabaikan). Hanya `asset_name` + `owner` yang diteruskan; kolom inventaris
+lain tidak pernah dikirim ke frontend. Daftar (~200 KB) di-cache 5 menit di memori server.
+Kosongkan variabel itu untuk mematikan fitur; API gagal → daftar client tetap tampil tanpa
+aset/pemilik, dengan `asset_lookup_failed` + kode error di log. Alert Center memakai sumber yang
+sama: `GET /api/alert-center` dan `GET /api/alerts/:id` menyertakan `assets: { "<mac>": { name, owner } }`
+untuk MAC di `target`, `diagnosis.affected_clients`, dan client pada jendela insiden (`{}` bila API gagal).
+
 Vendor, model, dan firmware AP diisi otomatis oleh collector dari laporan AP sendiri
 (`mca-dump`) pada sesi SSH yang host key-nya terverifikasi; kolom `identity_verified` menandai
 baris yang sudah terisi begitu. Nama AP tetap pilihan operator dan tidak pernah ditimpa.
