@@ -2,7 +2,8 @@ import React, { useEffect, useState } from 'react';
 import { api } from './api.js';
 import Chart from './Chart.jsx';
 import { CollectionBadge, FreshnessBadge, ReachabilityBadge } from './Badge.jsx';
-import { SIGNAL_LABEL, formatRelative, formatTime, formatUptime, num, signalTone } from './format.js';
+import { DiagnoseCard } from './Diagnose.jsx';
+import { SIGNAL_LABEL, formatRelative, formatTime, formatUptime, internetText, num, signalTone } from './format.js';
 
 const RANGES = [
   { key: '1h', label: '1 jam', ms: 3_600_000 },
@@ -79,10 +80,14 @@ export default function Detail({ id, onBack }) {
 
   const systemPoints = (field) =>
     systemRows.map((row) => ({ x: new Date(row.observed_at).getTime(), y: row[field] ?? null }));
-  const latencyPoints = pingRows.map((row) => ({
+  // Latency utama = ping AP → google.com (sampel sistem/SSH); ping server → AP terpisah.
+  const latencyPoints = systemPoints('internet_latency_ms');
+  const pingPoints = pingRows.map((row) => ({
     x: new Date(row.observed_at).getTime(),
     y: row.latency_ms ?? null,
   }));
+  const internetCode = latestSystem?.metric_status?.internet?.code ?? null;
+  const internetLoss = latestSystem?.internet_loss_percent;
 
   const pingFresh = latestPing ? pingFreshness(latestPing.observed_at) : (device.last_ping?.freshness ?? 'no_data');
   const systemAttempt = latestSystem?.observed_at ?? null;
@@ -181,7 +186,17 @@ export default function Detail({ id, onBack }) {
 
       <section className="metric-grid" aria-label="Metrik terakhir">
         <MetricCard
-          label="Latency"
+          label="Latency internet (AP→google.com)"
+          value={internetText(latestSystem?.internet_latency_ms, internetCode)}
+          freshness={device.freshness?.system}
+          hint={
+            latestSystem
+              ? `${internetLoss == null ? '' : `Loss ${num(internetLoss, 0)} % · `}${formatTime(latestSystem.observed_at)}`
+              : 'Belum ada sampel'
+          }
+        />
+        <MetricCard
+          label="Ping server→AP"
           value={
             latestPing?.latency_ms === null || latestPing?.latency_ms === undefined
               ? '—'
@@ -232,7 +247,8 @@ export default function Detail({ id, onBack }) {
       <section className="card stack">
         <h3>Grafik {range.label} terakhir</h3>
         <div className="chart-list">
-          <Chart values={latencyPoints} label="Latency" unit="ms" height={200} />
+          <Chart values={latencyPoints} label="Latency AP→google.com" unit="ms" height={200} />
+          <Chart values={pingPoints} label="Ping server→AP (keterjangkauan)" unit="ms" height={200} />
           <Chart values={systemPoints('memory_used_percent')} label="RAM terpakai" unit="%" height={200} />
           <Chart values={systemPoints('client_count')} label="Client terhubung" unit="client" height={200} digits={0} />
           <Chart values={systemPoints('load_1')} label="Load average 1 menit" height={200} digits={2} />
@@ -240,6 +256,8 @@ export default function Detail({ id, onBack }) {
           <Chart values={systemPoints('radio_na_cu_total')} label="Beban kanal 5 GHz" unit="%" height={200} digits={0} />
         </div>
       </section>
+
+      <DiagnoseCard device={device} />
 
       <ControlCard device={device} />
 

@@ -5,6 +5,7 @@ import Summary from './Summary.jsx';
 import Detail from './Detail.jsx';
 import Devices from './Devices.jsx';
 import AlertCenter from './AlertCenter.jsx';
+import Diagnose from './Diagnose.jsx';
 
 export default function App() {
   const [authState, setAuthState] = useState('checking'); // checking | anon | authed
@@ -103,7 +104,7 @@ export default function App() {
         ? { tone: 'unknown', text: 'Realtime: menyambung…' }
         : { tone: 'down', text: 'Realtime: terputus' };
 
-  const onSummary = view.name !== 'devices' && view.name !== 'alerts';
+  const onSummary = !['devices', 'alerts', 'diagnose'].includes(view.name);
 
   return (
     <div className="app">
@@ -138,6 +139,14 @@ export default function App() {
             onClick={() => setView({ name: 'alerts' })}
           >
             Alert Center
+          </button>
+          <button
+            type="button"
+            className="nav-link"
+            aria-current={view.name === 'diagnose' ? 'page' : undefined}
+            onClick={() => setView({ name: 'diagnose' })}
+          >
+            Diagnosa
           </button>
         </nav>
         <div className="topbar-right">
@@ -178,7 +187,9 @@ export default function App() {
         )}
       </div>
 
-      {view.name === 'devices' ? (
+      {view.name === 'diagnose' ? (
+        <Diagnose devices={devices} />
+      ) : view.name === 'devices' ? (
         <Devices devices={devices} loading={loading} onReload={load} />
       ) : view.name === 'alerts' ? (
         <AlertCenter

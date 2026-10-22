@@ -34,6 +34,10 @@ import { probeHostKey } from './ssh-probe.js';
 import { listClients } from './ssh-clients.js';
 import { assetLookupFor } from './assets.js';
 import { runDeviceAction, ACTIONS } from './ssh-action.js';
+import { diagnoseLive } from './ssh-diagnose.js';
+import { aiConfig, buildPayload, summarize } from './ai.js';
+import { listCollectorDevices } from '@ama/db';
+import { diagnose, matchClient } from '@ama/shared';
 import { log } from './logger.js';
 
 function isInt(value) {
@@ -49,7 +53,17 @@ function emptySeries(buckets) {
   return { latency: new Array(buckets).fill(null), ram: new Array(buckets).fill(null) };
 }
 
-export function createApp({ pool, assetLookup = null, allowedOrigin, probe = probeHostKey, clients = listClients, action = runDeviceAction }) {
+export function createApp({
+  pool,
+  assetLookup = null,
+  allowedOrigin,
+  probe = probeHostKey,
+  clients = listClients,
+  action = runDeviceAction,
+  diagnoser = diagnoseLive,
+  ai = summarize,
+  aiEnabled = () => Boolean(aiConfig()),
+}) {
   const app = express();
   // MAC → { name, owner } untuk Alert Center. Inventaris gagal ≠ alert gagal: kembalikan {}.
   const assetMap = assetLookupFor(assetLookup);
@@ -373,6 +387,97 @@ export function createApp({ pool, assetLookup = null, allowedOrigin, probe = pro
       return res.json({ ok: true, action: requested, status, requested_at: at.toISOString() });
     } catch (err) {
       return next(err);
+    }
+  });
+
+  // --- Diagnosa (tombol "Diagnosa AP" / "Diagnosa user") ------------------------------
+  // Cek live via SSH → aturan (packages/shared/src/diagnosis.js) → ringkasan AI opsional.
+  // ponytail: tanpa cooldown/kuota AI; tambahkan bila biaya API mulai terasa.
+  const diagInflight = new Set();
+  const credsOf = (device) => {
+    const password = readSecrets()[String(device.id)];
+    if (typeof password !== 'string' || password === '') return null;
+    return { id: device.id, ip: device.ip, port: device.port ?? 22, username: device.username, password, hostKeyFingerprint: device.host_key_fingerprint };
+  };
+  const withAssets = async (list) => (assetLookup ? assetLookup(list).catch(() => list) : list);
+  const publicClient = (c) => ({
+    hostname: c.hostname, ip: c.ip, mac: c.mac, radio: c.radio, ssid: c.ssid, signal: c.signal,
+    noise: c.noise, satisfaction: c.satisfaction, tx_rate: c.tx_rate, asset_name: c.asset_name ?? null, asset_owner: c.asset_owner ?? null,
+  });
+
+  app.get('/api/diagnose/config', requireAuth, (req, res) => res.json({ ai_enabled: aiEnabled() }));
+
+  // Body: { device_id?, query?, ai? }. query = nama/IP/MAC/aset/pemilik client yang mengeluh.
+  // Tanpa device_id: client dicari di semua AP aktif (mca-dump paralel).
+  app.post('/api/diagnose', requireAuth, async (req, res, next) => {
+    const { device_id: rawId, query: rawQuery, ai: wantAi } = req.body ?? {};
+    const query = typeof rawQuery === 'string' ? rawQuery.trim().slice(0, 64) : '';
+    if (rawId !== undefined && rawId !== null && !isInt(rawId)) return res.status(400).json({ error: 'invalid_payload', fields: { device_id: 'invalid_id' } });
+    if (rawId == null && !query) return res.status(400).json({ error: 'invalid_payload', fields: { query: 'required' } });
+    const lockKey = rawId == null ? `q:${query.toLowerCase()}` : `d:${rawId}`;
+    if (diagInflight.has(lockKey)) return res.status(429).json({ error: 'in_progress' });
+    diagInflight.add(lockKey);
+    try {
+      let device = null;
+      let target = null;
+      let candidates = [];
+      let searched = [];
+
+      if (rawId != null) {
+        device = await getDevice(pool, Number(rawId), hasStoredSecret);
+        if (!device) return res.status(404).json({ error: 'not_found' });
+      } else {
+        // Cari client di semua AP aktif.
+        const aps = await listCollectorDevices(pool);
+        searched = await Promise.all(aps.map(async (ap) => {
+          const creds = credsOf(ap);
+          if (!creds) return { id: ap.id, name: ap.name, ok: false, code: 'no_secret', hits: [] };
+          const r = await clients({ ...creds, hostKeyFingerprint: ap.hostKeyFingerprint });
+          if (!r.ok) return { id: ap.id, name: ap.name, ok: false, code: r.code, hits: [] };
+          return { id: ap.id, name: ap.name, ok: true, hits: matchClient(await withAssets(r.clients), query) };
+        }));
+        candidates = searched.flatMap((ap) => ap.hits.map((c) => ({ device_id: ap.id, device_name: ap.name, ...publicClient(c) })));
+        const failed = searched.filter((ap) => !ap.ok).map(({ id, name, code }) => ({ id, name, code }));
+        if (candidates.length !== 1) {
+          return res.json({ status: candidates.length ? 'choose' : 'not_found', query, candidates: candidates.slice(0, 20), failed_devices: failed });
+        }
+        device = await getDevice(pool, candidates[0].device_id, hasStoredSecret);
+      }
+
+      const creds = credsOf(device);
+      if (!creds) return res.status(409).json({ error: 'no_secret' });
+      const live = await diagnoser(creds);
+      if (live.ok) live.clients = await withAssets(live.clients);
+      if (query && live.ok) {
+        const hits = matchClient(live.clients, query);
+        target = hits.length === 1 ? hits[0] : hits.find((c) => c.mac === candidates[0]?.mac) ?? null;
+        // Nama ambigu di AP ini: minta operator memilih, jangan menebak orangnya.
+        if (!target && hits.length > 1) {
+          return res.json({ status: 'choose', query, candidates: hits.slice(0, 20).map((c) => ({ device_id: device.id, device_name: device.name, ...publicClient(c) })), failed_devices: [] });
+        }
+      }
+      const result = diagnose({ live, target, targetQuery: query || null });
+
+      let aiResult = { ok: false, code: 'ai_disabled' };
+      if (wantAi !== false && aiEnabled()) aiResult = await ai(buildPayload({ device, result, live, target }));
+
+      log.info({ event: 'diagnose', deviceId: device.id, user: req.user, status: result.verdict, code: aiResult.ok ? 'ai_ok' : aiResult.code });
+      return res.json({
+        status: 'done',
+        observed_at: live.observedAt ?? new Date().toISOString(),
+        device: { id: device.id, name: device.name, ip: device.ip },
+        target: target ? publicClient(target) : null,
+        query: query || null,
+        ...result,
+        live: live.ok
+          ? { gateway_ip: live.gatewayIp, client_count: live.total, internet_latency_ms: live.internet?.values?.internet_latency_ms ?? null }
+          : { code: live.code },
+        ai: aiResult.ok ? { ok: true, text: aiResult.text, model: aiResult.model } : { ok: false, code: aiResult.code },
+      });
+    } catch (err) {
+      return next(err);
+    } finally {
+      diagInflight.delete(lockKey);
     }
   });
 

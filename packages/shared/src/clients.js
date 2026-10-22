@@ -36,6 +36,10 @@ export function toClient(sta, vap) {
     tx_rate: num(sta.tx_rate),
     rx_rate: num(sta.rx_rate),
     satisfaction: num(sta.satisfaction),
+    // Untuk diagnosa: SNR (signal − noise) dan rasio retry.
+    noise: num(sta.noise),
+    tx_retries: num(sta.tx_retries),
+    tx_packets: num(sta.tx_packets),
   };
 }
 

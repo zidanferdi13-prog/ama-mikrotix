@@ -37,6 +37,20 @@ Halaman Detail punya kartu **Kontrol AP**: reboot dengan konfirmasi mengetik nam
   AP yang punya riwayat aksi ikut ditolak dihapus (`409 device_has_history`).
 - Efek samping wajar: alert `ap.reboot` (uptime turun) dan `ap.unreachable` sesaat selama AP boot.
 
+## Diagnosa (keluhan "sinyal jelek / tidak bisa internet")
+
+Dua pintu: menu **Diagnosa** (cari user berdasarkan nama perangkat/IP/MAC/nama aset/pemilik di
+semua AP) dan kartu **Diagnosa AP** di halaman Detail. `POST /api/diagnose { device_id?, query? }`.
+
+- Cek live via satu sesi SSH (host key tersemat): `ip route`, ping gateway, ping `8.8.8.8`,
+  ping `google.com`, `/proc/*`, `mca-dump`. ±3–6 detik. Tidak ada string pengguna di perintah.
+- Keputusan dari aturan di `packages/shared/src/diagnosis.js` (`DIAG`): sinyal/SNR/kepuasan/IP
+  client, gateway → internet IP → DNS berlapis, link ethernet, beban & interferensi radio, RAM/load,
+  reboot baru. Lapisan ini membedakan "sinyal user", "AP/radio", "LAN/gateway", "ISP", dan "DNS".
+- AI (opsional, `AMA_AI_API_KEY`, OpenAI-compatible) hanya merangkum temuan jadi kesimpulan,
+  langkah teknisi, dan kalimat untuk user. MAC, IP client, hostname, nama aset, dan pemilik
+  di-redaksi sebelum dikirim (`apps/server/src/ai.js`). Tanpa key → hasil rule-based saja.
+
 ## Prinsip yang dikunci
 
 - **Tiga dimensi status terpisah**, tidak pernah digabung jadi satu warna:
@@ -129,7 +143,7 @@ transaksi sendiri setelah metrik di-commit. Halaman **Alert Center** di dashboar
 ringkasan, filter (severity/status/perangkat/periode), detail bukti, dan aksi acknowledge/selesai.
 
 - Rules: ketersediaan AP (`ap.unreachable`, `ap.flapping`, `ap.ssh.*`, `ap.metrics.stale`,
-  `ap.collector_stalled`, `ap.unverified`, `ap.reboot`), performa (`ap.latency.high|critical`,
+  `ap.collector_stalled`, `ap.unverified`, `ap.reboot`), internet (`ap.internet.down`), performa (`ap.latency.high|critical`,
   `ap.memory.high`, `ap.load.high`, `ap.client_count.drop|spike`), uplink & radio
   (`ap.link.speed_low`, `ap.link.errors`, `ap.radio.{ng,na}.busy|interference`), kesehatan client
   (`client.signal.*`, `client.flapping`, `client.disconnected`, `client.traffic_stalled`),
@@ -140,7 +154,10 @@ ringkasan, filter (severity/status/perangkat/periode), detail bukti, dan aksi ac
   gagal beruntun), satu snapshot client hilang bukan disconnect (butuh 2 snapshot sukses beruntun),
   dan latency bercokol baru menjadi alert setelah 2–3 menit (masing-masing rule punya
   `min_duration_ms`/`recover_duration_ms`).
-- Latency di sini adalah **RTT ICMP collector → AP**, bukan latency client ke gateway/internet.
+- Latency di sini adalah **RTT ICMP AP → google.com**: collector masuk SSH ke AP lalu menjalankan
+  `ping -c 3 -w 4 google.com` di AP (tiap 60 s, sesi SSH yang sama dengan metrik sistem). Ping
+  collector → AP tetap jalan tiap 15 s, tetapi hanya sebagai bukti AP terjangkau dari server.
+  DNS gagal / 100% loss 2 sampel beruntun → `ap.internet.down`; SSH gagal = tidak diketahui.
 - Siklus hidup: `active` → `acknowledged` → `resolved`. Acknowledge dicatat pada `alert_events`
   (aktor + waktu) dan **tidak** menutup alert; rule yang pulih menutupnya otomatis, termasuk yang
   sudah diakui. Kondisi yang muncul lagi dalam 30 menit membuka ulang baris yang sama

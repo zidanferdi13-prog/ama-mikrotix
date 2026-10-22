@@ -138,7 +138,7 @@ function createStubPool() {
       if (/FLOOR\(UNIX_TIMESTAMP/.test(sql)) {
         // Satu titik contoh di bucket pertama, bila uji menyemainya.
         if (!state.seriesValue) return [];
-        const value = /kind = 'ping'/.test(sql) ? state.seriesValue.latency : state.seriesValue.ram;
+        const value = /internet_latency_ms/.test(sql) ? state.seriesValue.latency : state.seriesValue.ram;
         if (value === null) return [];
         const bucketSec = Number(params[0]);
         const first = Math.floor(Date.parse(`${params[1].replace(' ', 'T')}Z`) / 1000 / bucketSec);
@@ -716,6 +716,7 @@ test('listClients: host key wajib cocok, pemetaan mca-dump, batas 200, koneksi s
   assert.deepEqual(ok.clients[0], {
     hostname: 'hp', ip: '192.168.5.50', mac: 'aa:bb:cc:dd:ee:ff', radio: 'ng', ssid: 'wlan0',
     signal: -56, rssi: 40, uptime_s: 300, tx_bytes: 10, rx_bytes: 20, tx_rate: 72000, rx_rate: 65000, satisfaction: 97,
+    noise: null, tx_retries: null, tx_packets: null,
   });
   // Field yang tidak ada → null, bukan nol.
   assert.equal(ok.clients[1].hostname, null);
