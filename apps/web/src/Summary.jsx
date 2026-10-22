@@ -7,6 +7,7 @@ import {
   formatRelative,
   formatTime,
   formatUptime,
+  internetText,
   isStale,
   num,
   reachabilityOf,
@@ -248,7 +249,7 @@ function Metric({ label, children }) {
 }
 
 function ApCard({ device, series, onSelect }) {
-  const latency = device.last_ping?.latency_ms;
+  const ping = device.last_ping?.latency_ms;
   const ram = device.metrics?.memory_used_percent?.value;
   const latencySeries = toPoints(series?.latency);
   const ramSeries = toPoints(series?.ram);
@@ -263,7 +264,8 @@ function ApCard({ device, series, onSelect }) {
         Koleksi terakhir: {device.last_collected_at ? `${formatTime(device.last_collected_at)} (${formatRelative(device.last_collected_at)})` : 'belum pernah'}
       </span>
       <span className="ap-metrics">
-        <Metric label="Latency">{latency === null || latency === undefined ? '—' : `${num(latency, 1)} ms`}</Metric>
+        <Metric label="Internet (google.com)">{internetText(device.internet?.latency_ms, device.internet?.code)}</Metric>
+        <Metric label="Ping server→AP">{ping === null || ping === undefined ? '—' : `${num(ping, 1)} ms`}</Metric>
         <Metric label="RAM">{ram === null || ram === undefined ? '—' : `${num(ram, 1)} %`}</Metric>
         <Metric label="Uptime">{formatUptime(device.metrics?.uptime_seconds?.value)}</Metric>
         <Metric label="Kesegaran">
@@ -271,8 +273,8 @@ function ApCard({ device, series, onSelect }) {
         </Metric>
       </span>
       <span className="ap-spark">
-        <span className="sub">Latency {SPARK_RANGE}</span>
-        <Chart compact values={latencySeries} label="Latency 24 jam" unit="ms" />
+        <span className="sub">Latency internet {SPARK_RANGE}</span>
+        <Chart compact values={latencySeries} label="Latency AP→google.com 24 jam" unit="ms" />
         <span className="sub">RAM {SPARK_RANGE}</span>
         <Chart compact values={ramSeries} label="RAM 24 jam" unit="%" />
       </span>

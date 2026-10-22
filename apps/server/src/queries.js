@@ -1,8 +1,8 @@
 // Query terparameter, tanpa penyambungan string masukan §7.
-import { HISTORY, LINK_COLUMNS, RADIO_COLUMNS, STALE_MS } from '@ama/shared';
+import { HISTORY, INTERNET_COLUMNS, LINK_COLUMNS, RADIO_COLUMNS, STALE_MS } from '@ama/shared';
 
-// Kolom link/radio dari mca-dump (migrasi 006) — dipakai grafik & kartu detail perangkat.
-const LINK_RADIO_SQL = [...LINK_COLUMNS, ...RADIO_COLUMNS].join(', ');
+// Kolom link/radio dari mca-dump (migrasi 006) + ping AP → internet (008) — grafik & kartu detail.
+const LINK_RADIO_SQL = [...LINK_COLUMNS, ...RADIO_COLUMNS, ...INTERNET_COLUMNS].join(', ');
 
 // Rentang /api/summary: tetapkan bucket tetap agar seri maksimum 60 titik.
 export const SUMMARY_RANGES = {
@@ -69,7 +69,7 @@ export async function listDevices(pool, hasSecret = () => false) {
     const lastSystem = await pool.query(
       `SELECT observed_at, collection_status, uptime_seconds, load_1, load_5, load_15,
               memory_total_bytes, memory_available_bytes, memory_used_bytes, memory_used_percent,
-              metric_status
+              internet_latency_ms, internet_loss_percent, metric_status
        FROM device_metrics
        WHERE device_id = ? AND kind = 'system'
        ORDER BY observed_at DESC LIMIT 1`,
@@ -86,6 +86,17 @@ export async function listDevices(pool, hasSecret = () => false) {
           uptime_seconds: lastValidOf([row], 'uptime_seconds'),
           load_1: lastValidOf([row], 'load_1'),
           memory_used_percent: lastValidOf([row], 'memory_used_percent'),
+        }
+      : null;
+    // Latency utama = ping AP → google.com (SSH). Ping server → AP hanya keterjangkauan.
+    const internetStatus = row?.metric_status?.internet ?? null;
+    const internet = row
+      ? {
+          observed_at: isoOrNull(row.observed_at),
+          latency_ms: row.internet_latency_ms ?? null,
+          loss_percent: row.internet_loss_percent ?? null,
+          status: internetStatus?.status ?? null,
+          code: internetStatus?.code ?? null,
         }
       : null;
 
@@ -116,6 +127,7 @@ export async function listDevices(pool, hasSecret = () => false) {
           }
         : null,
       metrics,
+      internet,
       freshness: {
         uptime: freshness(device.uptime_last_valid_at, now, STALE_MS.metric),
         load: freshness(device.load_last_valid_at, now, STALE_MS.metric),
@@ -280,9 +292,9 @@ export async function summarySeries(pool, range) {
 
   const [latency, ram] = await Promise.all([
     pool.query(
-      `SELECT device_id, FLOOR(UNIX_TIMESTAMP(observed_at) / ?) AS bucket, AVG(latency_ms) AS value
+      `SELECT device_id, FLOOR(UNIX_TIMESTAMP(observed_at) / ?) AS bucket, AVG(internet_latency_ms) AS value
        FROM device_metrics
-       WHERE kind = 'ping' AND observed_at BETWEEN ? AND ?
+       WHERE kind = 'system' AND observed_at BETWEEN ? AND ?
        GROUP BY device_id, bucket`,
       [bucketSec, from, to],
     ),

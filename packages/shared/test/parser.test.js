@@ -11,6 +11,7 @@ import {
   parseClientCount,
   parseDeviceIdentity,
   parseLinkRadio,
+  parseInternetPing,
   normalizeSystemSample,
 } from '../src/parser.js';
 import { METRIC_STATUS, ERROR_CODE } from '../src/contracts.js';
@@ -21,6 +22,37 @@ const fixture = (name) => readFileSync(join(fixtureDir, name), 'utf8');
 
 const OBSERVED_AT = '2026-10-15T08:32:11.000Z';
 const RECEIVED_AT = '2026-10-15T08:32:12.000Z';
+
+// Keluaran asli BusyBox v1.25.1 di UAP-AC-LR (AP Office 2 LT 1), 2026-10-22.
+test('parseInternetPing: sukses, DNS gagal, 100% loss, kosong', () => {
+  const okOut = `PING google.com (172.253.158.139): 56 data bytes
+64 bytes from 172.253.158.139: seq=0 ttl=104 time=18.112 ms
+
+--- google.com ping statistics ---
+3 packets transmitted, 3 packets received, 0% packet loss
+round-trip min/avg/max = 16.747/17.554/18.112 ms
+`;
+  const okRes = parseInternetPing(okOut);
+  assert.equal(okRes.internet.status, METRIC_STATUS.ok);
+  assert.deepEqual(okRes.values, { internet_latency_ms: 17.554, internet_loss_percent: 0 });
+
+  const partial = parseInternetPing('3 packets transmitted, 2 packets received, 33% packet loss\nround-trip min/avg/max = 10.0/12.5/15.0 ms');
+  assert.deepEqual(partial.values, { internet_latency_ms: 12.5, internet_loss_percent: 33 });
+
+  const iputils = parseInternetPing('3 packets transmitted, 3 received, 0% packet loss, time 2003ms\nrtt min/avg/max/mdev = 16.1/17.2/18.3/0.9 ms');
+  assert.equal(iputils.values.internet_latency_ms, 17.2);
+
+  const dns = parseInternetPing("ping: bad address 'google.com'\n");
+  assert.equal(dns.internet.code, 'dns_failed');
+  assert.equal(dns.values.internet_latency_ms, null);
+
+  const lost = parseInternetPing('PING google.com (1.2.3.4): 56 data bytes\n\n--- google.com ping statistics ---\n3 packets transmitted, 0 packets received, 100% packet loss\n');
+  assert.equal(lost.internet.code, ERROR_CODE.no_reply);
+  assert.deepEqual(lost.values, { internet_latency_ms: null, internet_loss_percent: 100 });
+
+  assert.equal(parseInternetPing(undefined).internet.code, ERROR_CODE.missing);
+  assert.equal(parseInternetPing('sh: ping: not found').internet.status, METRIC_STATUS.unsupported);
+});
 
 test('fixture APOfficeLT1 menghasilkan angka sampel yang benar', () => {
   const sample = normalizeSystemSample({

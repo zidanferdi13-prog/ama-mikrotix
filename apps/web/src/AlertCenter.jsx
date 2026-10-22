@@ -546,7 +546,8 @@ export default function AlertCenter({ devices, refreshKey, alertEvent, onSelectD
                       <th>Waktu</th>
                       <th>Jenis</th>
                       <th>Status</th>
-                      <th>Latency</th>
+                      <th>Ping server→AP</th>
+                      <th>Internet</th>
                       <th>RAM</th>
                       <th>Load</th>
                       <th>Client</th>
@@ -567,6 +568,7 @@ export default function AlertCenter({ devices, refreshKey, alertEvent, onSelectD
                             : (row.collection_status ?? '—')}
                         </td>
                         <td>{row.latency_ms === null ? '—' : `${Number(row.latency_ms).toFixed(1)} ms`}</td>
+                        <td>{row.kind === 'system' ? internetText(row.internet_latency_ms, null) : '—'}</td>
                         <td>{row.memory_used_percent === null ? '—' : `${Number(row.memory_used_percent).toFixed(1)}%`}</td>
                         <td>{row.load_1 === null ? '—' : Number(row.load_1).toFixed(2)}</td>
                         <td>{row.client_count ?? '—'}</td>

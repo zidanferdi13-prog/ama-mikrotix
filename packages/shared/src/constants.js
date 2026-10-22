@@ -18,7 +18,8 @@ export const TIMEOUT_MS = {
   ping: 2_000,
   sshConnect: 5_000,
   sshCommand: 5_000,
-  sshSession: 15_000,
+  // 4 perintah baca + ping internet (≤ INTERNET_PROBE.deadlineS) dalam satu sesi.
+  sshSession: 20_000,
 };
 
 // Kesegaran: ping > 45s, metrik sistem > 180s sejak observasi valid terakhir.
@@ -38,6 +39,11 @@ export const HISTORY = {
   maxRangeMs: 24 * 60 * 60 * 1000,
 };
 
+// Uji internet DARI AP (lewat sesi SSH yang sama): AP → google.com. Ini yang dipakai
+// sebagai "latency"; ping collector → AP hanya bukti AP terjangkau dari server.
+// -w = batas total detik (DNS lambat/paket hilang tidak menahan sesi SSH).
+export const INTERNET_PROBE = { host: 'google.com', count: 3, deadlineS: 4 };
+
 // Perintah tetap, bukan dari request pengguna.
 export const SYSTEM_COMMANDS = [
   'cat /proc/uptime',
@@ -45,6 +51,8 @@ export const SYSTEM_COMMANDS = [
   'cat /proc/meminfo',
   // Jumlah client Wi-Fi; UniFi menjawab JSON. Vendor lain → parser unsupported.
   'mca-dump',
+  // BusyBox ping; stderr digabung agar "bad address" (DNS gagal) terbaca.
+  `ping -c ${INTERNET_PROBE.count} -w ${INTERNET_PROBE.deadlineS} ${INTERNET_PROBE.host} 2>&1`,
 ];
 
 // --- Alert §5: semua ambang di satu tempat. Nilai awal untuk uji, kalibrasi ulang
@@ -93,10 +101,13 @@ export const ALERT = {
   // (20 menit) → aktif; kenaikan di jendela < minIncreases → pulih.
   // Kalibrasi 2026-10-16: error 0 di 9 AP. rx_dropped TIDAK dinilai (lihat devops.md).
   linkErrors: { minIncreases: 2 },
+  // Ping AP → internet gagal (DNS gagal / 100% loss) pada N sampel sistem beruntun → alert.
+  // Satu sampel ≈ 60 s, jadi 2 ≈ 1–2 menit. Pulih: satu sampel sukses.
+  internetFailures: 2,
 };
 
 // kind=threshold dievaluasi generik; sisanya punya evaluator khusus di alerts.js.
-// Latency = RTT ICMP collector → AP, BUKAN latency client → gateway/internet.
+// Latency = RTT ICMP AP → google.com (dijalankan di AP lewat SSH), bukan collector → AP.
 // signal = dBm dari mca-dump (negatif; makin kecil makin lemah).
 const thr = (severity, title, metric, source, direction, threshold, recover, minMin, recoverMin) => ({
   kind: 'threshold', severity, title, metric, source, direction, threshold, recover,
@@ -116,8 +127,9 @@ export const ALERT_RULES = {
   'ap.reboot': { kind: 'reboot', severity: 'info', title: 'AP reboot (uptime turun)' },
   'ap.client_count.drop': { kind: 'client_count', severity: 'warning', title: 'Jumlah client AP turun signifikan' },
   'ap.client_count.spike': { kind: 'client_count', severity: 'info', title: 'Jumlah client AP melonjak' },
-  'ap.latency.high': thr('warning', 'Latency collector→AP tinggi', 'latency_ms', 'ping', 'above', 100, 80, 3, 2),
-  'ap.latency.critical': thr('critical', 'Latency collector→AP sangat tinggi', 'latency_ms', 'ping', 'above', 250, 200, 2, 2),
+  'ap.internet.down': { kind: 'internet', severity: 'critical', title: 'AP tidak bisa akses internet (ping google.com gagal)' },
+  'ap.latency.high': thr('warning', 'Latency AP→internet tinggi', 'internet_latency_ms', 'system', 'above', 100, 80, 3, 2),
+  'ap.latency.critical': thr('critical', 'Latency AP→internet sangat tinggi', 'internet_latency_ms', 'system', 'above', 250, 200, 2, 2),
   'ap.memory.high': thr('warning', 'RAM AP tinggi', 'memory_used_percent', 'system', 'above', 85, 80, 5, 3),
   // ponytail: ambang load absolut; jumlah CPU AP belum dikumpulkan. Ganti ke
   // load/CPU bila /proc/cpuinfo ditambahkan ke SYSTEM_COMMANDS.

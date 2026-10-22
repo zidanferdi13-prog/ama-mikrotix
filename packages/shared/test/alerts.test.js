@@ -37,7 +37,7 @@ const systemRow = (agoSec, values = {}) => ({
   memory_used_percent: values.memory_used_percent ?? 40,
   client_count: values.client_count ?? 5,
   // Kolom link/radio (migrasi 006) diteruskan apa adanya; tidak diberi default.
-  ...Object.fromEntries(Object.entries(values).filter(([k]) => k.startsWith('eth_') || k.startsWith('radio_'))),
+  ...Object.fromEntries(Object.entries(values).filter(([k]) => /^(eth|radio|internet)_/.test(k))),
 });
 
 const sshSample = (agoSec, ssh) => ({ observed_at: sec(agoSec), ssh });
@@ -157,27 +157,49 @@ test('skenario 4: ping terakhir terlalu tua → ap.collector_stalled, dan korela
 });
 
 // --- 5. Latency tinggi selama durasi tertentu -----------------------------------
-test('skenario 5: latency di atas ambang ≥3 menit → ap.latency.high; pulih ≥2 menit → resolve', () => {
-  const breaching = [pingRow(180, 1, 150), pingRow(120, 1, 150), pingRow(60, 1, 150), pingRow(0, 1, 150)];
-  const first = deviceEval({ pingHistory: breaching }).findings;
+// Latency = ping AP → google.com di sampel sistem; ping collector → AP (150 ms di sini)
+// tidak lagi dinilai sebagai latency.
+const net = (agoSec, internet_latency_ms) => systemRow(agoSec, { internet_latency_ms, internet_status: 'ok' });
+test('skenario 5: latency AP→internet di atas ambang ≥3 menit → ap.latency.high; pulih ≥2 menit → resolve', () => {
+  const fast = [pingRow(180, 1, 150), pingRow(0, 1, 150)];
+  assert.equal(isActive(deviceEval({ pingHistory: fast, systemHistory: [net(180, 20), net(0, 20)] }).findings, 'ap.latency.high'), false);
+
+  const breaching = [net(180, 150), net(120, 150), net(60, 150), net(0, 150)];
+  const first = deviceEval({ pingHistory: fast, systemHistory: breaching }).findings;
   assert.equal(isActive(first, 'ap.latency.high'), true);
   assert.equal(findingOf(first, 'ap.latency.high').evidence.breach_run_ms, 180_000);
 
   // 90 detik saja belum cukup untuk membuka.
-  const shortBreach = deviceEval({ pingHistory: [pingRow(300, 1, 5), pingRow(90, 1, 150), pingRow(0, 1, 150)] }).findings;
+  const shortBreach = deviceEval({ systemHistory: [net(300, 5), net(90, 150), net(0, 150)] }).findings;
   assert.equal(isActive(shortBreach, 'ap.latency.high'), false);
 
   // Latency normal ≥2 menit → kondisi pulih.
   const recovered = deviceEval({
-    pingHistory: [pingRow(180, 1, 150), pingRow(120, 1, 40), pingRow(60, 1, 40), pingRow(0, 1, 40)],
+    systemHistory: [net(180, 150), net(120, 40), net(60, 40), net(0, 40)],
     alerts: [{ id: 7, rule_id: 'ap.latency.high', device_id: DEVICE.id, dedup_key: KEY('ap.latency.high'), first_seen_at: sec(600), last_seen_at: sec(60) }],
   }).findings;
   assert.equal(isActive(recovered, 'ap.latency.high'), false);
 
   // Latency sangat tinggi (250+ selama 2 menit) → critical.
-  const critical = deviceEval({ pingHistory: [pingRow(120, 1, 300), pingRow(0, 1, 300)] }).findings;
+  const critical = deviceEval({ systemHistory: [net(120, 300), net(0, 300)] }).findings;
   assert.equal(isActive(critical, 'ap.latency.critical'), true);
   assert.equal(ALERT_RULES['ap.latency.critical'].severity, 'critical');
+});
+
+test('ap.internet.down: 2 sampel beruntun DNS gagal/100% loss → aktif; SSH gagal tidak dihitung; 1 sukses → pulih', () => {
+  const down = (ago, code) => systemRow(ago, { internet_status: 'invalid', internet_code: code });
+  const unknown = (ago) => systemRow(ago, { internet_status: 'invalid', internet_code: 'missing' });
+  const pings = [pingRow(30, 1), pingRow(0, 1)];
+
+  assert.equal(isActive(deviceEval({ pingHistory: pings, systemHistory: [net(120, 20), down(60, 'no_reply')] }).findings, 'ap.internet.down'), false);
+  const active = deviceEval({ pingHistory: pings, systemHistory: [net(180, 20), down(120, 'dns_failed'), unknown(60), down(0, 'no_reply')] }).findings;
+  assert.equal(isActive(active, 'ap.internet.down'), true);
+  assert.equal(findingOf(active, 'ap.internet.down').evidence.consecutive_failures, 2);
+  assert.equal(findingOf(active, 'ap.internet.down').since, sec(120));
+
+  // Hanya sampel "tidak diketahui" (SSH gagal) → rule tidak dinilai sama sekali.
+  assert.equal(findingOf(deviceEval({ pingHistory: pings, systemHistory: [unknown(60), unknown(0)] }).findings, 'ap.internet.down'), null);
+  assert.equal(isActive(deviceEval({ pingHistory: pings, systemHistory: [down(120, 'no_reply'), down(60, 'no_reply'), net(0, 20)] }).findings, 'ap.internet.down'), false);
 });
 
 // --- 6. RAM tinggi selama beberapa interval -------------------------------------

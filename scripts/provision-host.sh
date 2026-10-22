@@ -60,7 +60,7 @@ rsync -a --delete "$REPO/apps/web/dist/" "$WEB_ROOT/"
 
 # --- 5. unit systemd ---
 write_unit() {
-  local name="$1" desc="$2" entry="$3"
+  local name="$1" desc="$2" entry="$3" extra="${4:-}"
   cat > "/etc/systemd/system/$name" <<UNIT
 [Unit]
 Description=$desc
@@ -79,6 +79,7 @@ Restart=on-failure
 RestartSec=5
 NoNewPrivileges=true
 PrivateTmp=true
+$extra
 
 [Install]
 WantedBy=multi-user.target
@@ -86,7 +87,11 @@ UNIT
 }
 
 write_unit ama-server.service "AMA monitoring REST + Socket.IO" "apps/server/src/index.js"
-write_unit ama-collector.service "AMA monitoring collector (ping + SSH)" "apps/collector/src/main.js"
+# NoNewPrivileges membuat file capability /usr/bin/ping (cap_net_raw) diabaikan sehingga
+# semua ping gagal "no_reply"; beri CAP_NET_RAW sebagai ambient capability ke collector saja.
+write_unit ama-collector.service "AMA monitoring collector (ping + SSH)" "apps/collector/src/main.js" \
+  "AmbientCapabilities=CAP_NET_RAW
+CapabilityBoundingSet=CAP_NET_RAW"
 
 # --- 5b. backup harian: root via socket (tanpa password), simpan 7 dump terakhir ---
 install -d -m 700 /var/backups/ama

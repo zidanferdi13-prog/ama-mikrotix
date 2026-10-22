@@ -159,6 +159,34 @@ function lastValue(rows, field) {
   return null;
 }
 
+// Internet dari AP: hanya sampel yang benar-benar terukur (sukses, DNS gagal, 100% loss)
+// yang dinilai. SSH gagal/timeout = tidak diketahui → dilewati, bukan bukti internet mati.
+const INTERNET_DOWN_CODES = ['dns_failed', 'no_reply'];
+export function detectInternetDown(systemRows, atMs) {
+  const rows = systemRows.filter((r) => ms(r.observed_at) !== null && (r.internet_status === 'ok' || INTERNET_DOWN_CODES.includes(r.internet_code)));
+  const last = rows[rows.length - 1];
+  if (!last || atMs - ms(last.observed_at) > ALERT.maxDataAgeMs.metric + TOLERANCE_MS) return { evaluated: false };
+  const down = (r) => r.internet_status !== 'ok';
+  const streak = trailingStreak(rows, down);
+  return {
+    evaluated: true,
+    active: streak >= ALERT.internetFailures,
+    since: streak ? rows[rows.length - streak].observed_at : null,
+    evidence: {
+      kind: 'internet',
+      source: 'system',
+      code: down(last) ? last.internet_code : null,
+      consecutive_failures: streak,
+      threshold: ALERT.internetFailures,
+      checks: rows.slice(-3).map((r) => ({ observed_at: r.observed_at, code: r.internet_code ?? null, latency_ms: r.internet_latency_ms ?? null, loss_percent: r.internet_loss_percent ?? null })),
+      note: 'Ping google.com dijalankan DI AP lewat SSH. AP terjangkau dari server, tetapi tidak bisa ke internet.',
+      next_steps: last.internet_code === 'dns_failed'
+        ? ['Cek DNS yang diterima AP (DHCP/static)', 'Cek DNS server/gateway', 'Uji nslookup google.com dari jaringan yang sama']
+        : ['Cek gateway/default route AP', 'Cek uplink internet kantor', 'Cek firewall yang memblok ICMP keluar'],
+    },
+  };
+}
+
 // Counter error ethernet (rx+tx) kumulatif: hitung interval sampel yang naik. Turun = counter
 // reset (reboot) → diabaikan, bukan kenaikan negatif. Data hilang/tua → tidak dinilai (hold).
 export function detectLinkErrors(systemRows, atMs) {
@@ -358,14 +386,16 @@ export function evaluateDeviceRules({ atMs, device, metrics = {}, events = [], a
   });
 
   // --- §5.2 Performance ------------------------------------------------------
-  const pingHistory = pingRows.filter((r) => ms(r.observed_at) !== null && atMs - ms(r.observed_at) <= ALERT.deviceWindowMs + TOLERANCE_MS);
-  for (const ruleId of ['ap.latency.high', 'ap.latency.critical']) {
-    const res = evaluateThreshold(ruleId, pingHistory, { atMs, open: openOf(ruleId) });
-    if (!res.evaluated) continue;
-    push(ruleId, res.active, res.since, { ...res.evidence, note: 'Latency = RTT collector → AP (ICMP), bukan latency client → internet.' });
-  }
-
   const systemHistory = systemRows.filter((r) => ms(r.observed_at) !== null && atMs - ms(r.observed_at) <= ALERT.deviceWindowMs + TOLERANCE_MS);
+  // Latency = RTT AP → google.com dari sampel sistem (SSH), bukan ping collector → AP.
+  for (const ruleId of ['ap.latency.high', 'ap.latency.critical']) {
+    const res = evaluateThreshold(ruleId, systemHistory, { atMs, open: openOf(ruleId) });
+    if (!res.evaluated) continue;
+    push(ruleId, res.active, res.since, { ...res.evidence, note: 'Latency = RTT ICMP AP → google.com (diukur di AP lewat SSH).' });
+  }
+  const internet = detectInternetDown(systemHistory, atMs);
+  if (internet.evaluated) push('ap.internet.down', internet.active, openOf('ap.internet.down')?.first_seen_at ?? internet.since, internet.evidence);
+
   for (const ruleId of ['ap.memory.high', 'ap.load.high']) {
     const res = evaluateThreshold(ruleId, systemHistory, { atMs, open: openOf(ruleId) });
     if (!res.evaluated) continue;
@@ -618,7 +648,8 @@ export function diagnosisFor(kind, confidence, context = {}) {
 
 // --- §6 Korelasi Skenario A–D ------------------------------------------------
 const AVAILABILITY_RULES = ['ap.unreachable', 'ap.ssh.unavailable', 'ap.ssh.auth_failed', 'ap.ssh.config', 'ap.flapping'];
-const LATENCY_RULES = ['ap.latency.high', 'ap.latency.critical'];
+// Gejala jalur internet AP (latency/putus): beberapa AP sekaligus → masalah upstream bersama.
+const LATENCY_RULES = ['ap.latency.high', 'ap.latency.critical', 'ap.internet.down'];
 // ap.client_count.* diturunkan dari daftar client yang sama dengan indikator `clients`:
 // bukan indikator mandiri, jadi tidak dihitung sebagai resource AP (hindari skor ganda).
 // Radio/ethernet: kondisi AP sendiri (bukan client) — indikator mandiri untuk korelasi §6.

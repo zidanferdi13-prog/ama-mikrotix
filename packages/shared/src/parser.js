@@ -206,14 +206,44 @@ function statusesToCollectionStatus(statuses) {
   return 'error';
 }
 
+// Ping AP → internet (perintah dijalankan DI AP lewat SSH, stdout+stderr digabung).
+// BusyBox: "3 packets transmitted, 3 packets received, 0% packet loss" +
+// "round-trip min/avg/max = 16.7/17.5/18.1 ms"; iputils: "rtt min/avg/max/mdev = …".
+// Kode: dns_failed (bad address / unknown host), no_reply (100% loss), missing (perintah
+// gagal/timeout → tidak diketahui, BUKAN bukti internet mati).
+export const INTERNET_COLUMNS = ['internet_latency_ms', 'internet_loss_percent'];
+
+export function parseInternetPing(text) {
+  const values = { internet_latency_ms: null, internet_loss_percent: null };
+  if (typeof text !== 'string' || text.trim() === '') return { values, internet: invalid(ERROR_CODE.missing) };
+  if (/bad address|unknown host|name or service not known|could not resolve|temporary failure in name resolution/i.test(text)) {
+    return { values, internet: invalid('dns_failed') };
+  }
+  const stats = text.match(/(\d+)\s+packets transmitted,\s+(\d+)\s+(?:packets )?received/i);
+  if (!stats) {
+    return { values, internet: /not found|applet not found/i.test(text) ? unsupported() : invalid(ERROR_CODE.missing) };
+  }
+  const sent = Number(stats[1]);
+  const received = Number(stats[2]);
+  if (!(sent > 0) || received < 0 || received > sent) return { values, internet: invalid(ERROR_CODE.out_of_range) };
+  values.internet_loss_percent = Math.round(((sent - received) / sent) * 100);
+  if (received === 0) return { values, internet: invalid(ERROR_CODE.no_reply) };
+  const rtt = text.match(/(?:round-trip|rtt)[^=]*=\s*[\d.]+\/([\d.]+)\//i);
+  const avg = rtt ? Number(rtt[1]) : NaN;
+  if (!Number.isFinite(avg) || avg < 0) return { values, internet: invalid(ERROR_CODE.not_numeric) };
+  values.internet_latency_ms = avg;
+  return { values, internet: ok(avg) };
+}
+
 // Gabungkan keluaran perintah jadi satu sampel sistem yang tervalidasi.
-// outputs: { uptime, loadavg, meminfo, mcaDump } — string mentah atau undefined bila gagal ambil.
+// outputs: { uptime, loadavg, meminfo, mcaDump, internet } — string mentah atau undefined bila gagal ambil.
 export function normalizeSystemSample({ deviceId, observedAt, outputs = {}, receivedAt }) {
   const uptime = parseUptime(outputs.uptime);
   const load = parseLoadavg(outputs.loadavg);
   const mem = parseMeminfo(outputs.meminfo);
   const clients = parseClientCount(outputs.mcaDump);
   const linkRadio = parseLinkRadio(outputs.mcaDump);
+  const internet = parseInternetPing(outputs.internet);
 
   const metricStatus = {
     uptime_seconds: uptime.uptime_seconds,
@@ -231,10 +261,10 @@ export function normalizeSystemSample({ deviceId, observedAt, outputs = {}, rece
     kind: 'system',
     observed_at: observedAt,
     received_at: receivedAt ?? new Date().toISOString(),
-    // client_count/link/radio tidak ikut menentukan collection_status: AP non-UniFi tidak punya
-    // mca-dump, dan itu tidak boleh menurunkan sampel uptime/load/RAM yang sehat menjadi partial.
+    // client_count/link/radio/internet tidak ikut menentukan collection_status: AP non-UniFi
+    // tidak punya mca-dump, dan internet putus bukan kegagalan koleksi metrik AP.
     collection_status: statusesToCollectionStatus(metricStatus),
-    metric_status: { ...metricStatus, client_count: clients.client_count, link: linkRadio.link, radio: linkRadio.radio },
+    metric_status: { ...metricStatus, client_count: clients.client_count, link: linkRadio.link, radio: linkRadio.radio, internet: internet.internet },
     uptime_seconds: uptime.uptime_seconds.value,
     load_1: load.load_1.value,
     load_5: load.load_5.value,
@@ -245,6 +275,7 @@ export function normalizeSystemSample({ deviceId, observedAt, outputs = {}, rece
     memory_used_percent: mem.memory_used_percent.value,
     client_count: clients.client_count.value,
     ...linkRadio.values,
+    ...internet.values,
   };
 }
 

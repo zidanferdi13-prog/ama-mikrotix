@@ -103,3 +103,10 @@ export function signalTone(dbm) {
   if (v < SIGNAL_WEAK) return 'weak';
   return 'good';
 }
+// Latency AP → internet (ping google.com dari AP lewat SSH). Gagal terukur → alasan singkat.
+export function internetText(latencyMs, code) {
+  if (latencyMs !== null && latencyMs !== undefined) return `${num(latencyMs, 1)} ms`;
+  if (code === 'dns_failed') return 'DNS gagal';
+  if (code === 'no_reply') return 'Tidak ada internet';
+  return '—';
+}

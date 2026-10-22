@@ -355,8 +355,9 @@ Diputuskan saat menambah alert proaktif & insiden (2026-10):
   tombol selesai. Kondisi yang muncul lagi ≤30 menit membuka baris lama (`reopen_count`).
 - **Hold, bukan resolve** — rule yang tidak bisa dinilai (data terlalu tua, collector mati)
   tidak menghasilkan temuan, sehingga alert terbuka tidak ditutup. "Tidak ada data" ≠ "pulih".
-- **Latency = RTT ICMP collector → AP** (bukan latency client ke internet); `load` masih
-  absolut karena jumlah CPU AP belum dikumpulkan.
+- **Latency = RTT ICMP AP → google.com** (ping dijalankan di AP lewat SSH, kolom
+  `internet_latency_ms`/`internet_loss_percent`, migrasi 008). `latency_ms` (collector → AP)
+  hanya keterjangkauan. `load` masih absolut karena jumlah CPU AP belum dikumpulkan.
 - **Korelasi ditutup otomatis** bila tidak lagi terdeteksi pada siklus berikutnya, supaya
   insiden tidak menggantung, dan `confidence` mengikuti aturan kaku (indikator independen),
   bukan probabilitas.

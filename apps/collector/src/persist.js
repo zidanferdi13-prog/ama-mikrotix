@@ -1,9 +1,9 @@
 // Persistensi §6: satu transaksi per siklus. Rollback → tandai gagal, tanpa emit sukses.
-import { LINK_COLUMNS, RADIO_COLUMNS, REACHABLE, applyPingTransition } from '@ama/shared';
+import { INTERNET_COLUMNS, LINK_COLUMNS, RADIO_COLUMNS, REACHABLE, applyPingTransition } from '@ama/shared';
 import { log } from './logger.js';
 
-// Kolom link/radio (migrasi 006) — nama dari konstanta, bukan masukan pengguna.
-const LINK_RADIO = [...LINK_COLUMNS, ...RADIO_COLUMNS];
+// Kolom link/radio (migrasi 006) + internet (008) — nama dari konstanta, bukan masukan pengguna.
+const LINK_RADIO = [...LINK_COLUMNS, ...RADIO_COLUMNS, ...INTERNET_COLUMNS];
 
 // Perintah tetap tanpa string masukan pengguna.
 const SQL = {
